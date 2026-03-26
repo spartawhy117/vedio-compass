@@ -8,6 +8,8 @@
     [int]$VideoBitrateKbps = 3500,
     [int]$AudioBitrateKbps = 320,
     [int]$AudioSampleRate = 48000,
+    [ValidateSet("aac", "libfdk_aac")]
+    [string]$AudioCodec = "aac",
     [switch]$ReplaceOriginal,
     [switch]$KeepBackup,
     [double]$DurationToleranceSec = 2.0
@@ -39,6 +41,7 @@ $result = Invoke-EncodeWorkflow `
     -DefaultSuffix "ffmpeg_qsv" `
     -AudioBitrateKbps $AudioBitrateKbps `
     -AudioSampleRate $AudioSampleRate `
+    -AudioCodec $AudioCodec `
     -ReplaceOriginal:$ReplaceOriginal `
     -KeepBackup:$KeepBackup `
     -DurationToleranceSec $DurationToleranceSec

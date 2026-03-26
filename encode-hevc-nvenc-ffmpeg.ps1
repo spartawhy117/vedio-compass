@@ -8,6 +8,8 @@
     [int]$VideoBitrateKbps = 3500,
     [int]$AudioBitrateKbps = 320,
     [int]$AudioSampleRate = 48000,
+    [ValidateSet("aac", "libfdk_aac")]
+    [string]$AudioCodec = "aac",
     [switch]$ReplaceOriginal,
     [switch]$KeepBackup,
     [double]$DurationToleranceSec = 2.0
@@ -25,7 +27,7 @@ $videoArguments = @(
     "-c:v", "hevc_nvenc"
     "-b:v", ("{0}k" -f $VideoBitrateKbps)
     "-rc:v", "vbr"
-    "-preset:v", "p5"
+    "-preset:v", "p4"
     "-profile:v", "main"
 )
 
@@ -38,6 +40,7 @@ $result = Invoke-EncodeWorkflow `
     -DefaultSuffix "ffmpeg_nvenc" `
     -AudioBitrateKbps $AudioBitrateKbps `
     -AudioSampleRate $AudioSampleRate `
+    -AudioCodec $AudioCodec `
     -ReplaceOriginal:$ReplaceOriginal `
     -KeepBackup:$KeepBackup `
     -DurationToleranceSec $DurationToleranceSec

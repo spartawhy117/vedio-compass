@@ -334,6 +334,37 @@ function Assert-RequiredVideoTools {
     }
 }
 
+function Test-FfmpegEncoderAvailable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FfmpegPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$EncoderName
+    )
+
+    $result = Invoke-ProcessCapture -FilePath $FfmpegPath -Arguments @("-hide_banner", "-encoders")
+    if ($result.ExitCode -ne 0) {
+        return $false
+    }
+
+    return ($result.StdOut -match ("(?im)^\s*[A-Z\.]+\s+{0}(\s|$)" -f [Regex]::Escape($EncoderName)))
+}
+
+function Assert-AudioCodecSupported {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FfmpegPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$AudioCodec
+    )
+
+    if (-not (Test-FfmpegEncoderAvailable -FfmpegPath $FfmpegPath -EncoderName $AudioCodec)) {
+        throw "当前 ffmpeg 不支持音频编码器 $AudioCodec。请改用 aac，或更换包含该编码器的 FFmpeg 构建。"
+    }
+}
+
 function Ensure-Directory {
     param(
         [Parameter(Mandatory = $true)]
@@ -1161,6 +1192,8 @@ function Invoke-EncodeWorkflow {
 
         [int]$AudioBitrateKbps = 320,
         [int]$AudioSampleRate = 48000,
+        [ValidateSet("aac", "libfdk_aac")]
+        [string]$AudioCodec = "aac",
         [switch]$ReplaceOriginal,
         [switch]$KeepBackup,
         [double]$DurationToleranceSec = 2.0
@@ -1188,6 +1221,8 @@ function Invoke-EncodeWorkflow {
         throw "编码前无法正确读取源文件信息。"
     }
 
+    Assert-AudioCodecSupported -FfmpegPath $FfmpegPath -AudioCodec $AudioCodec
+
     $extension = [System.IO.Path]::GetExtension($resolvedOutputPath).ToLowerInvariant()
     $arguments = @(
         "-hide_banner"
@@ -1207,7 +1242,7 @@ function Invoke-EncodeWorkflow {
     $arguments += $VideoArguments
     $arguments += @(
         "-fps_mode", "cfr"
-        "-c:a", "aac"
+        "-c:a", $AudioCodec
         "-b:a", ("{0}k" -f $AudioBitrateKbps)
         "-sn"
         $resolvedOutputPath

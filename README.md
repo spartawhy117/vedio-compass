@@ -1,4 +1,4 @@
-# Video Compass
+﻿# Video Compass
 
 Windows 下的视频扫描与批量压缩 PowerShell 工具。主流程基于 FFmpeg，支持 `qsv / nvenc / amf / cpu` 四种编码路径。
 
@@ -142,7 +142,9 @@ tasks/<目录名>__scan-4500__target-3500/
 powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
   -TaskFolder 'xxxx\tasks\source-folder__scan-4500__target-3500' `
   -Count 1 `
+  -ParallelCount 2 `
   -Encoder qsv `
+  -AudioCodec aac `
   -ReplaceOriginalMode yes `
   -KeepBackupMode no
 ```
@@ -151,7 +153,9 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 
 - 任务目录
 - 本次处理数量
+- 并行任务数
 - 编码器：`qsv` / `nvenc` / `amf` / `cpu`
+- 音频编码器：`aac` / `libfdk_aac`
 - 是否替换原文件
 - 是否保留备份
 
@@ -159,7 +163,9 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 
 - `TaskFolder`：上一步生成的任务目录。
 - `Count`：这次要处理多少个视频。
+- `ParallelCount`：并行任务数，当前支持 `1` 或 `2`。
 - `Encoder`：选择使用哪条编码路径。
+- `AudioCodec`：音频编码器，默认 `aac`。如果你的 FFmpeg 构建包含 `libfdk_aac`，也可以改用它。
 - `ReplaceOriginalMode yes`：压缩成功后替换原文件。
 - `KeepBackupMode no`：替换后不保留备份。
 
@@ -167,6 +173,7 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 
 - 不带 `-Count` 时，默认值会显示为当前 `task.json` 中剩余的待处理总数。
 - 如果输入数量大于剩余待处理总数，脚本会自动按剩余待处理总数执行。
+- `ParallelCount` 当前支持 `1` 或 `2`，其中 `2` 更适合做 NVENC 这类硬编码批量吞吐测试。
 - 压缩过程中如果用户正常关闭脚本，脚本会尽力停止当前 ffmpeg、删除当前临时输出，并把当前项目写回 `pending`。
 - 中断时会在 `history.log` 追加一条 `interrupted` 记录，便于后续排查。
 - 如果是强杀进程、断电这类极端中断，Windows 不一定会给脚本回调时间，仍由下次启动时的恢复逻辑清理遗留 temp 并重置状态。
@@ -183,6 +190,7 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 - 批量脚本会显示本轮总进度条。
 - 批量脚本会根据当前编码速度，实时估算本轮剩余时间。
 - 当前总进度按“本轮待处理文件的总时长”计算，不是按文件数量平均。
+- 并行模式下，批量进度以任务完成数量为主，不再逐个显示每一路子任务的详细进度。
 - 每个文件完成后，脚本会输出：
   - 本次完成数量
   - 剩余待处理数量
@@ -231,13 +239,14 @@ powershell -ExecutionPolicy Bypass -File .\encode-hevc-nvenc-ffmpeg.ps1 `
 - `-VideoBitrateKbps`
 - `-AudioBitrateKbps`
 - `-AudioSampleRate`
+- `-AudioCodec`
 - `-ReplaceOriginal`
 - `-KeepBackup`
 
 如何选择：
 
 - `encode-hevc-qsv-ffmpeg.ps1`：Intel 核显或 Intel 媒体单元可用时。
-- `encode-hevc-nvenc-ffmpeg.ps1`：NVIDIA 编码器可用时。
+- `encode-hevc-nvenc-ffmpeg.ps1`：NVIDIA 编码器可用时，当前默认使用 `p4` 预设。
 - `encode-hevc-amf-ffmpeg.ps1`：AMD 编码器可用时。
 - `encode-hevc-cpu-ffmpeg.ps1`：没有可用硬件编码器时。
 
