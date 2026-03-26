@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$InputPath,
 
@@ -43,7 +43,7 @@ $result = Invoke-EncodeWorkflow `
     -KeepBackup:$KeepBackup `
     -DurationToleranceSec $DurationToleranceSec
 
-Write-Host "Output file: $($result.OutputPath)" -ForegroundColor Green
+Write-Host "输出文件: $($result.OutputPath)" -ForegroundColor Green
 if ($result.BackupPath) {
-    Write-Host "Backup file: $($result.BackupPath)" -ForegroundColor Yellow
+    Write-Host "备份文件: $($result.BackupPath)" -ForegroundColor Yellow
 }

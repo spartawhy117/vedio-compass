@@ -2,6 +2,19 @@
 
 Windows 下的视频扫描与批量压缩 PowerShell 工具。主流程基于 FFmpeg，支持 `qsv / nvenc / amf / cpu` 四种编码路径。
 
+## 编码路径与硬件要求
+
+- `qsv`
+  适合带 Intel 核显或 Intel 媒体引擎的机器。要求驱动正常、FFmpeg 构建包含 QSV 编码支持。
+- `nvenc`
+  适合带 NVIDIA 独显且驱动正常的机器。要求显卡本身提供 NVENC 硬件编码单元。
+- `amf`
+  适合带 AMD 独显，或带 AMD 核显的 APU 机器。要求驱动正常、FFmpeg 构建包含 AMF 编码支持。
+- `cpu`
+  不依赖硬件编码器，只要 CPU 能跑 FFmpeg 即可。兼容性最高，但通常也是最慢的一条路径。
+
+如果你希望压缩时尽量不影响浏览器，通常优先选择不和浏览器当前渲染显卡冲突的编码路径。
+
 ## 适用场景
 
 适合以下情况：
@@ -152,8 +165,9 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 
 - 不带 `-Count` 时，默认值会显示为当前 `task.json` 中剩余的待处理总数。
 - 如果输入数量大于剩余待处理总数，脚本会自动按剩余待处理总数执行。
-- 压缩过程中如果用户正常关闭脚本，脚本会尽力停止当前 ffmpeg、删除临时输出，并把当前项目写回 `pending`。
-- 如果是强杀进程、断电这类极端中断，仍由下次启动时的恢复逻辑清理遗留 temp 并重置状态。
+- 压缩过程中如果用户正常关闭脚本，脚本会尽力停止当前 ffmpeg、删除当前临时输出，并把当前项目写回 `pending`。
+- 中断时会在 `history.log` 追加一条 `interrupted` 记录，便于后续排查。
+- 如果是强杀进程、断电这类极端中断，Windows 不一定会给脚本回调时间，仍由下次启动时的恢复逻辑清理遗留 temp 并重置状态。
 
 处理完成后会自动更新：
 
@@ -173,10 +187,15 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 
 中断恢复行为：
 
-- 如果用户上次在压缩中途直接关闭窗口或强制结束脚本，相关文件可能会停留在 `processing`。
-- 下次启动 [compress-from-task.ps1](./compress-from-task.ps1) 时，脚本会自动检查这些 `processing` 项。
-- 检测到残留 `processing` 项后，会默认：
-  - 重置回 `pending`
+- 如果用户上次在压缩中途直接关闭窗口、按 `Ctrl+C`，或 PowerShell 正常退出，脚本会尽力：
+  - 停掉当前 `ffmpeg`
+  - 删除当前 `.codex-temp-*` 临时输出
+  - 把当前项目立即写回 `pending`
+  - 在 `history.log` 中追加 `interrupted` 记录
+- 如果用户上次是强杀进程、直接结束终端树、断电，脚本当时未必来得及回写状态。
+- 下次启动 [compress-from-task.ps1](./compress-from-task.ps1) 时，脚本会自动检查所有未完成项目。
+- 检测到残留状态后，会默认：
+  - 把 `processing` 项重置回 `pending`
   - 清理同目录下遗留的 `.codex-temp-*` 临时文件
   - 然后从头开始重新压缩该文件
 - 不需要用户手动改 `task.json`。

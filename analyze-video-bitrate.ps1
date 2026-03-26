@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$RootPath,
     [int]$ThresholdKbps,
     [int]$TargetKbps,
@@ -10,7 +10,8 @@ $ErrorActionPreference = "Stop"
 
 . (Join-Path -Path $PSScriptRoot -ChildPath "video-compass-common.ps1")
 
-$defaultRootPath = "E:\entertament\hx\movie"
+Assert-RequiredVideoTools -RequireFfprobe
+
 $defaultThresholdKbps = 4500
 $defaultTargetKbps = 3500
 $defaultAudioBitrateKbps = 320
@@ -18,7 +19,7 @@ $defaultAudioSampleRate = 48000
 $videoExtensions = @(".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".mts", ".m2ts")
 
 if (-not $PSBoundParameters.ContainsKey("RootPath")) {
-    $RootPath = Read-InputOrDefault -Prompt "Scan folder" -DefaultValue $defaultRootPath
+    $RootPath = Read-RequiredInput -Prompt "扫描目录"
 }
 
 if (-not $PSBoundParameters.ContainsKey("ThresholdKbps")) {
@@ -49,7 +50,7 @@ $files = Get-ChildItem -LiteralPath $resolvedRootPath -File -Recurse |
     Where-Object { $videoExtensions -contains $_.Extension.ToLowerInvariant() }
 
 if (-not $files) {
-    throw "No supported video files were found under the target directory."
+    throw "目标目录下没有找到支持的视频文件。"
 }
 
 $candidates = New-Object System.Collections.Generic.List[object]
@@ -173,14 +174,14 @@ $pendingCount = @($task.items | Where-Object { $_.status -eq "pending" }).Count
 $estimatedSavedBytes = Get-SumOrZero -Items @($task.items) -PropertyName "estimatedSavedBytes"
 
 Write-Host ""
-Write-Host "Source path: $resolvedRootPath"
-Write-Host "Threshold bitrate: $ThresholdKbps kbps"
-Write-Host "Target bitrate: $TargetKbps kbps"
-Write-Host "Scanned video files: $($files.Count)"
-Write-Host "Candidates: $candidateCount"
-Write-Host "Pending: $pendingCount"
-Write-Host "Skipped during scan: $($skippedScan.Count)"
-Write-Host "Estimated candidate savings: $(Format-Bytes -Bytes $estimatedSavedBytes)"
-Write-Host "Task folder: $taskFolder"
-Write-Host "Task file: $(Join-Path -Path $taskFolder -ChildPath 'task.json')"
-Write-Host "Summary file: $(Join-Path -Path $taskFolder -ChildPath 'summary.txt')"
+Write-Host "源目录: $resolvedRootPath"
+Write-Host "扫描阈值码率: $ThresholdKbps kbps"
+Write-Host "目标压缩码率: $TargetKbps kbps"
+Write-Host "扫描到的视频文件数: $($files.Count)"
+Write-Host "候选文件数: $candidateCount"
+Write-Host "待处理数量: $pendingCount"
+Write-Host "扫描阶段跳过数量: $($skippedScan.Count)"
+Write-Host "预计候选文件可节省空间: $(Format-Bytes -Bytes $estimatedSavedBytes)"
+Write-Host "任务目录: $taskFolder"
+Write-Host "任务文件: $(Join-Path -Path $taskFolder -ChildPath 'task.json')"
+Write-Host "摘要文件: $(Join-Path -Path $taskFolder -ChildPath 'summary.txt')"

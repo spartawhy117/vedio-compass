@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$RootPath,
     [switch]$KeepBackup
@@ -6,6 +6,23 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Initialize-ConsoleEncoding {
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [Console]::InputEncoding = $utf8NoBom
+        [Console]::OutputEncoding = $utf8NoBom
+        $global:OutputEncoding = $utf8NoBom
+
+        $chcpPath = Join-Path -Path $env:SystemRoot -ChildPath "System32\chcp.com"
+        if (Test-Path -LiteralPath $chcpPath) {
+            & $chcpPath 65001 > $null
+        }
+    } catch {
+    }
+}
+
+Initialize-ConsoleEncoding
 
 function Resolve-ToolPath {
     param(
@@ -26,7 +43,7 @@ function Resolve-ToolPath {
         return $localPath
     }
 
-    throw "Cannot find $CommandName. Add it to PATH or put $LocalFileName next to this script."
+    throw "找不到 $CommandName。请先运行 .\check-video-compass-env.ps1，或安装 FFmpeg，并把 $LocalFileName 放到 PATH 或脚本同目录。"
 }
 
 function Get-WindowsTotalBitrate {
@@ -163,7 +180,7 @@ function Repair-ContainerMetadata {
     try {
         & $FfmpegPath @arguments
         if ($LASTEXITCODE -ne 0) {
-            throw "ffmpeg remux failed with exit code $LASTEXITCODE."
+            throw "ffmpeg 重新封装失败，退出码 $LASTEXITCODE。"
         }
 
         Move-Item -LiteralPath $FilePath -Destination $backupPath
@@ -175,7 +192,7 @@ function Repair-ContainerMetadata {
             Move-Item -LiteralPath $FilePath -Destination $tempPath
             Move-Item -LiteralPath $backupPath -Destination $FilePath
             Remove-Item -LiteralPath $tempPath -Force
-            throw "Windows Explorer still reports 0 after remux."
+            throw "重新封装后，Windows 资源管理器仍然显示码率为 0。"
         }
 
         if (-not $KeepBackupFile) {
@@ -205,14 +222,15 @@ function Format-Kbps {
     return ("{0:N0} kbps" -f ($BitsPerSecond / 1000.0))
 }
 
-$defaultRoot = "E:\entertament\hx\fc2"
-
 if (-not $PSBoundParameters.ContainsKey("RootPath")) {
-    $inputPath = Read-Host "Scan folder (press Enter for default: $defaultRoot)"
-    if ([string]::IsNullOrWhiteSpace($inputPath)) {
-        $RootPath = $defaultRoot
-    } else {
-        $RootPath = $inputPath.Trim()
+    while ($true) {
+        $inputPath = Read-Host "扫描目录"
+        if (-not [string]::IsNullOrWhiteSpace($inputPath)) {
+            $RootPath = $inputPath.Trim()
+            break
+        }
+
+        Write-Host "此项不能为空，请重新输入。" -ForegroundColor Yellow
     }
 }
 
@@ -227,7 +245,7 @@ $files = Get-ChildItem -LiteralPath $resolvedRootPath -File -Recurse |
     Where-Object { $videoExtensions -contains $_.Extension.ToLowerInvariant() }
 
 if (-not $files) {
-    throw "No supported video files were found under the target directory."
+    throw "目标目录下没有找到支持的视频文件。"
 }
 
 $fixed = New-Object System.Collections.Generic.List[object]
@@ -239,7 +257,7 @@ for ($index = 0; $index -lt $files.Count; $index++) {
     $file = $files[$index]
 
     if ((($index + 1) % 20) -eq 0 -or $index -eq 0 -or ($index + 1) -eq $files.Count) {
-        Write-Progress -Activity "Checking Explorer bitrate metadata" -Status "$($index + 1) / $($files.Count)" -PercentComplete ((($index + 1) / $files.Count) * 100)
+        Write-Progress -Activity "检查资源管理器码率元数据" -Status "$($index + 1) / $($files.Count)" -PercentComplete ((($index + 1) / $files.Count) * 100)
     }
 
     try {
@@ -253,7 +271,7 @@ for ($index = 0; $index -lt $files.Count; $index++) {
         if (-not $probeInfo -or $probeInfo.BitrateBps -le 0) {
             $failed.Add([pscustomobject]@{
                 Path = $file.FullName
-                Reason = "No usable bitrate found with ffprobe."
+                Reason = "ffprobe 未能读取到可用码率。"
             })
             continue
         }
@@ -262,7 +280,7 @@ for ($index = 0; $index -lt $files.Count; $index++) {
         if ($repairableExtensions -notcontains $extension) {
             $unsupported.Add([pscustomobject]@{
                 Path = $file.FullName
-                Reason = "Windows does not reliably expose writable TotalBitrate for this container/codec combination."
+                Reason = "当前容器或编码组合不适合通过 Windows 的 TotalBitrate 元数据回填。"
                 ActualBitrate = [Math]::Round($probeInfo.BitrateBps)
                 VideoCodec = $probeInfo.VideoCodec
                 AudioCodec = $probeInfo.AudioCodec
@@ -284,19 +302,19 @@ for ($index = 0; $index -lt $files.Count; $index++) {
     }
 }
 
-Write-Progress -Activity "Checking Explorer bitrate metadata" -Completed
+Write-Progress -Activity "检查资源管理器码率元数据" -Completed
 
 Write-Host ""
-Write-Host "Scan path: $resolvedRootPath"
-Write-Host "Checked: $($files.Count) files"
-Write-Host "Already OK: $alreadyOk"
-Write-Host "Fixed: $($fixed.Count)"
-Write-Host "Unsupported by Windows metadata handler: $($unsupported.Count)"
-Write-Host "Failed: $($failed.Count)"
+Write-Host "扫描目录: $resolvedRootPath"
+Write-Host "已检查文件数: $($files.Count)"
+Write-Host "原本正常: $alreadyOk"
+Write-Host "已修复: $($fixed.Count)"
+Write-Host "Windows 元数据处理器不支持: $($unsupported.Count)"
+Write-Host "失败: $($failed.Count)"
 
 if ($fixed.Count -gt 0) {
     Write-Host ""
-    Write-Host "Fixed files:"
+    Write-Host "已修复文件:"
     $fixed | Select-Object -First 10 | ForEach-Object {
         Write-Host ("- {0} -> {1}" -f $_.Path, (Format-Kbps -BitsPerSecond $_.NewBitrate))
     }
@@ -304,18 +322,18 @@ if ($fixed.Count -gt 0) {
 
 if ($unsupported.Count -gt 0) {
     Write-Host ""
-    Write-Host "Unsupported samples:"
+    Write-Host "不支持回填的样本:"
     $unsupported | Select-Object -First 10 | ForEach-Object {
         Write-Host ("- {0}" -f $_.Path)
-        Write-Host ("  actual: {0}, video: {1}, audio: {2}" -f (Format-Kbps -BitsPerSecond $_.ActualBitrate), $_.VideoCodec, $_.AudioCodec)
+        Write-Host ("  实际码率: {0}, 视频编码: {1}, 音频编码: {2}" -f (Format-Kbps -BitsPerSecond $_.ActualBitrate), $_.VideoCodec, $_.AudioCodec)
     }
 }
 
 if ($failed.Count -gt 0) {
     Write-Host ""
-    Write-Host "Failed files:"
+    Write-Host "失败文件:"
     $failed | Select-Object -First 10 | ForEach-Object {
         Write-Host ("- {0}" -f $_.Path)
-        Write-Host ("  reason: {0}" -f $_.Reason)
+        Write-Host ("  原因: {0}" -f $_.Reason)
     }
 }
