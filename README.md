@@ -2,6 +2,8 @@
 
 Windows 下的视频扫描与批量压缩 PowerShell 工具。主流程基于 FFmpeg，支持 `qsv / nvenc / amf / cpu` 四种编码路径。
 
+文档中的示例路径统一用 `xxxx` 表示占位目录，使用时请替换成你自己的实际路径。
+
 ## 编码路径与硬件要求
 
 - `qsv`
@@ -84,7 +86,7 @@ powershell -ExecutionPolicy Bypass -File .\check-video-compass-env.ps1 -InstallF
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\analyze-video-bitrate.ps1 `
-  -RootPath 'E:\entertament\hx\onlyfans' `
+  -RootPath 'xxxx\source-folder' `
   -ThresholdKbps 4500 `
   -TargetKbps 3500
 ```
@@ -138,7 +140,7 @@ tasks/<目录名>__scan-4500__target-3500/
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
-  -TaskFolder 'D:\study\Proj\vedio-compass\tasks\onlyfans__scan-4500__target-3500' `
+  -TaskFolder 'xxxx\tasks\source-folder__scan-4500__target-3500' `
   -Count 1 `
   -Encoder qsv `
   -ReplaceOriginalMode yes `
@@ -217,7 +219,7 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\encode-hevc-nvenc-ffmpeg.ps1 `
-  -InputPath 'E:\videos\demo.mp4' `
+  -InputPath 'xxxx\demo.mp4' `
   -VideoBitrateKbps 3500 `
   -ReplaceOriginal
 ```
@@ -249,7 +251,7 @@ powershell -ExecutionPolicy Bypass -File .\encode-hevc-nvenc-ffmpeg.ps1 `
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\repair-zero-system-bitrate.ps1 `
-  -RootPath 'E:\entertament\hx\onlyfans'
+  -RootPath 'xxxx\source-folder'
 ```
 
 当前主要对 `.mp4 / .mov / .m4v` 的 Windows 码率元数据修复更可靠。
