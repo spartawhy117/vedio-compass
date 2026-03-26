@@ -1,0 +1,4 @@
+tasks/
+plan.md
+build/*.zip
+build/package-temp-*/
