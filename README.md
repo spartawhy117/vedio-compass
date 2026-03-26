@@ -236,12 +236,8 @@ powershell -ExecutionPolicy Bypass -File .\build\package-scripts.ps1 -IncludeDoc
 
 ## 兼容性说明
 
-- 批处理主路径已经切换为 FFmpeg 驱动。
-- [encode-hevc-qsv-qsvencc.ps1](./encode-hevc-qsv-qsvencc.ps1) 仍保留在仓库中，作为单文件 `QSVEncC` 参考脚本，不参与 `compress-from-task.ps1` 的任务调度。
-- `QSVEncC` 脚本支持：
-  - `-DecodeMode hw|sw`
-  - `-Parallel`
-  - `-ProcessPriority`
+- 批处理主路径统一由 FFmpeg 驱动。
+- 当前仓库只维护 `qsv / nvenc / amf / cpu` 四条 FFmpeg 编码路径。
 
 ## 已验证样例
 
