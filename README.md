@@ -114,7 +114,7 @@ tasks/<目录名>__scan-4500__target-3500/
 这三个文件的作用：
 
 - `task.json`：任务状态源
-- `summary.txt`：摘要
+- `summary.txt`：摘要。记录本次扫描整体情况，以及“如果把本次扫描出的候选文件全部优化完成，预计总共可节省多少空间”
 - `history.log`：处理历史
 
 建议：
@@ -154,7 +154,7 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 - 任务目录
 - 本次处理数量
 - 并行任务数
-- 编码器：`qsv` / `nvenc` / `amf` / `cpu`
+- 编码器编号：`1=qsv` / `2=nvenc` / `3=amf` / `4=cpu`
 - 音频编码器：`aac` / `libfdk_aac`
 - 是否替换原文件
 - 是否保留备份
@@ -169,11 +169,19 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 - `ReplaceOriginalMode yes`：压缩成功后替换原文件。
 - `KeepBackupMode no`：替换后不保留备份。
 
+格式说明：
+
+- 任务扫描支持 `.mp4 / .mkv / .avi / .mov / .wmv / .flv / .webm / .m4v / .ts / .mts / .m2ts`。
+- 只有 `.mkv` 会保留 `.mkv` 封装。
+- 其余格式在压缩输出时都会统一转成 `.mp4` 封装。
+- 如果启用 `ReplaceOriginalMode yes`，原文件会被删除，并由同名的新输出文件接管；例如 `.avi / .mov / .m4v / .wmv / .ts` 最终都会替换成同名 `.mp4`。
+
 数量规则：
 
 - 不带 `-Count` 时，默认值会显示为当前 `task.json` 中剩余的待处理总数。
 - 如果输入数量大于剩余待处理总数，脚本会自动按剩余待处理总数执行。
 - `ParallelCount` 当前支持 `1` 或 `2`，其中 `2` 更适合做 NVENC 这类硬编码批量吞吐测试。
+- 使用 `nvenc + ParallelCount 2` 时，脚本会为每个任务单独生成临时输出文件，避免并行任务互相覆盖。
 - 压缩过程中如果用户正常关闭脚本，脚本会尽力停止当前 ffmpeg、删除当前临时输出，并把当前项目写回 `pending`。
 - 中断时会在 `history.log` 追加一条 `interrupted` 记录，便于后续排查。
 - 如果是强杀进程、断电这类极端中断，Windows 不一定会给脚本回调时间，仍由下次启动时的恢复逻辑清理遗留 temp 并重置状态。
@@ -190,7 +198,7 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 - 批量脚本会显示本轮总进度条。
 - 批量脚本会根据当前编码速度，实时估算本轮剩余时间。
 - 当前总进度按“本轮待处理文件的总时长”计算，不是按文件数量平均。
-- 并行模式下，批量进度以任务完成数量为主，不再逐个显示每一路子任务的详细进度。
+- 并行模式下，除了本轮总进度，还会按槽位显示最多两路并行任务各自的当前进度。
 - 每个文件完成后，脚本会输出：
   - 本次完成数量
   - 剩余待处理数量
@@ -207,6 +215,8 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 - 检测到残留状态后，会默认：
   - 把 `processing` 项重置回 `pending`
   - 清理同目录下遗留的 `.codex-temp-*` 临时文件
+  - 清理同目录下遗留的 `.parallel-progress-*` / `.parallel-result-*` 状态文件
+  - 停掉与当前任务对应、上次残留的 `invoke-encode-worker.ps1` / `ffmpeg.exe` 进程
   - 然后从头开始重新压缩该文件
 - 不需要用户手动改 `task.json`。
 
@@ -249,6 +259,7 @@ powershell -ExecutionPolicy Bypass -File .\encode-hevc-nvenc-ffmpeg.ps1 `
 - `encode-hevc-nvenc-ffmpeg.ps1`：NVIDIA 编码器可用时，当前默认使用 `p4` 预设。
 - `encode-hevc-amf-ffmpeg.ps1`：AMD 编码器可用时。
 - `encode-hevc-cpu-ffmpeg.ps1`：没有可用硬件编码器时。
+- 对于默认输出路径或原位替换模式，只有 `.mkv` 保留 `.mkv`；其余输入都会输出为 `.mp4`。
 
 ### 4. 修复码率为 0 的元数据
 

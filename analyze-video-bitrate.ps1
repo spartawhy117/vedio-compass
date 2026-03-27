@@ -23,11 +23,11 @@ if (-not $PSBoundParameters.ContainsKey("RootPath")) {
 }
 
 if (-not $PSBoundParameters.ContainsKey("ThresholdKbps")) {
-    $ThresholdKbps = Read-IntOrDefault -Prompt "Scan threshold bitrate (kbps)" -DefaultValue $defaultThresholdKbps
+    $ThresholdKbps = Read-IntOrDefault -Prompt "扫描基准线码率（kbps）" -DefaultValue $defaultThresholdKbps
 }
 
 if (-not $PSBoundParameters.ContainsKey("TargetKbps")) {
-    $TargetKbps = Read-IntOrDefault -Prompt "Target encode bitrate (kbps)" -DefaultValue $defaultTargetKbps
+    $TargetKbps = Read-IntOrDefault -Prompt "目标压缩码率（kbps）" -DefaultValue $defaultTargetKbps
 }
 
 $resolvedRootPath = (Resolve-Path -LiteralPath $RootPath).Path
@@ -60,7 +60,7 @@ for ($index = 0; $index -lt $files.Count; $index++) {
     $file = $files[$index]
 
     if ((($index + 1) % 25) -eq 0 -or $index -eq 0 -or ($index + 1) -eq $files.Count) {
-        Write-Progress -Activity "Scanning video files" -Status "$($index + 1) / $($files.Count)" -PercentComplete ((($index + 1) / $files.Count) * 100)
+        Write-Progress -Activity "正在扫描视频文件" -Status "$($index + 1) / $($files.Count)" -PercentComplete ((($index + 1) / $files.Count) * 100)
     }
 
     try {
@@ -68,7 +68,7 @@ for ($index = 0; $index -lt $files.Count; $index++) {
         if (-not $info) {
             $skippedScan.Add([pscustomobject]@{
                 Path = $file.FullName
-                Reason = "Missing usable bitrate or duration metadata"
+                Reason = "缺少可用的码率或时长信息"
             })
             continue
         }
@@ -135,7 +135,7 @@ for ($index = 0; $index -lt $files.Count; $index++) {
     }
 }
 
-Write-Progress -Activity "Scanning video files" -Completed
+Write-Progress -Activity "正在扫描视频文件" -Completed
 
 $orderedItems = @($candidates | Sort-Object -Property sortKey, videoBitrateKbps -Descending)
 

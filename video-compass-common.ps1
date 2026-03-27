@@ -45,6 +45,10 @@ function Initialize-VideoCompassGlobals {
     if (-not (Get-Variable -Name "VideoCompassShutdownReason" -Scope Global -ErrorAction SilentlyContinue)) {
         $global:VideoCompassShutdownReason = ""
     }
+
+    if (-not (Get-Variable -Name "VideoCompassJobObjectTypesInitialized" -Scope Global -ErrorAction SilentlyContinue)) {
+        $global:VideoCompassJobObjectTypesInitialized = $false
+    }
 }
 
 Initialize-VideoCompassGlobals
@@ -52,12 +56,14 @@ Initialize-VideoCompassGlobals
 function Set-VideoCompassActiveEncodeContext {
     param(
         [int]$ProcessId,
-        [string]$OutputPath
+        [string]$OutputPath,
+        [IntPtr]$JobHandle = [IntPtr]::Zero
     )
 
     $global:VideoCompassActiveEncodeContext = @{
         ProcessId = $ProcessId
         OutputPath = $OutputPath
+        JobHandle = $JobHandle
         CleanupDone = $false
     }
 }
@@ -72,6 +78,18 @@ function Update-VideoCompassActiveEncodeProcessId {
     }
 
     $global:VideoCompassActiveEncodeContext.ProcessId = $ProcessId
+}
+
+function Update-VideoCompassActiveEncodeJobHandle {
+    param(
+        [IntPtr]$JobHandle
+    )
+
+    if (-not $global:VideoCompassActiveEncodeContext) {
+        return
+    }
+
+    $global:VideoCompassActiveEncodeContext.JobHandle = $JobHandle
 }
 
 function Clear-VideoCompassActiveEncodeContext {
@@ -196,6 +214,13 @@ function Stop-VideoCompassActiveEncode {
         }
     }
 
+    if ($context.ContainsKey("JobHandle") -and $context.JobHandle -and ($context.JobHandle -ne [IntPtr]::Zero)) {
+        try {
+            Close-VideoCompassJobHandle -JobHandle $context.JobHandle
+        } catch {
+        }
+    }
+
     $outputPath = ""
     if ($context.ContainsKey("OutputPath") -and $context.OutputPath) {
         $outputPath = [string]$context.OutputPath
@@ -270,6 +295,148 @@ namespace VideoCompass {
     }
 
     $global:VideoCompassExitHandlingInitialized = $true
+}
+
+function Initialize-VideoCompassJobObjectTypes {
+    if ($global:VideoCompassJobObjectTypesInitialized) {
+        return
+    }
+
+    if (-not ("VideoCompass.JobObjectNativeMethods" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace VideoCompass {
+    public enum JOBOBJECTINFOCLASS {
+        JobObjectExtendedLimitInformation = 9
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IO_COUNTERS {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    public static class JobObjectNativeMethods {
+        public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetInformationJobObject(
+            IntPtr hJob,
+            JOBOBJECTINFOCLASS JobObjectInfoClass,
+            IntPtr lpJobObjectInfo,
+            uint cbJobObjectInfoLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CloseHandle(IntPtr hObject);
+    }
+}
+"@
+    }
+
+    $global:VideoCompassJobObjectTypesInitialized = $true
+}
+
+function New-VideoCompassKillOnCloseJob {
+    Initialize-VideoCompassJobObjectTypes
+
+    $jobHandle = [VideoCompass.JobObjectNativeMethods]::CreateJobObject([IntPtr]::Zero, $null)
+    if ($jobHandle -eq [IntPtr]::Zero) {
+        throw "创建 Windows Job Object 失败。"
+    }
+
+    $info = New-Object VideoCompass.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    $info.BasicLimitInformation.LimitFlags = [VideoCompass.JobObjectNativeMethods]::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal([Runtime.InteropServices.Marshal]::SizeOf([type][VideoCompass.JOBOBJECT_EXTENDED_LIMIT_INFORMATION]))
+    try {
+        [Runtime.InteropServices.Marshal]::StructureToPtr($info, $buffer, $false)
+        $ok = [VideoCompass.JobObjectNativeMethods]::SetInformationJobObject(
+            $jobHandle,
+            [VideoCompass.JOBOBJECTINFOCLASS]::JobObjectExtendedLimitInformation,
+            $buffer,
+            [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][VideoCompass.JOBOBJECT_EXTENDED_LIMIT_INFORMATION]))
+
+        if (-not $ok) {
+            [void][VideoCompass.JobObjectNativeMethods]::CloseHandle($jobHandle)
+            throw "设置 Windows Job Object 失败。"
+        }
+    } finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
+    }
+
+    return $jobHandle
+}
+
+function Add-VideoCompassProcessToJob {
+    param(
+        [Parameter(Mandatory = $true)]
+        [IntPtr]$JobHandle,
+
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process]$Process
+    )
+
+    Initialize-VideoCompassJobObjectTypes
+
+    if ($JobHandle -eq [IntPtr]::Zero) {
+        throw "Job Handle 无效。"
+    }
+
+    $assigned = [VideoCompass.JobObjectNativeMethods]::AssignProcessToJobObject($JobHandle, $Process.Handle)
+    if (-not $assigned) {
+        throw "将进程加入 Windows Job Object 失败。"
+    }
+}
+
+function Close-VideoCompassJobHandle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [IntPtr]$JobHandle
+    )
+
+    Initialize-VideoCompassJobObjectTypes
+
+    if ($JobHandle -ne [IntPtr]::Zero) {
+        [void][VideoCompass.JobObjectNativeMethods]::CloseHandle($JobHandle)
+    }
 }
 
 function Resolve-ToolPath {
@@ -664,7 +831,7 @@ function Write-TaskSummary {
     $processing = @($items | Where-Object { $_.status -eq "processing" })
 
     $remainingSizeBytes = Get-SumOrZero -Items $pending -PropertyName "sizeBytes"
-    $remainingSavedBytes = Get-SumOrZero -Items $pending -PropertyName "estimatedSavedBytes"
+    $totalEstimatedSavedBytes = Get-SumOrZero -Items $items -PropertyName "estimatedSavedBytes"
 
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("任务名称: $($Task.taskName)")
@@ -678,7 +845,7 @@ function Write-TaskSummary {
     $lines.Add("失败: $($failed.Count)")
     $lines.Add("已跳过: $($skipped.Count)")
     $lines.Add("待处理文件总体积: $(Format-Bytes -Bytes $remainingSizeBytes)")
-    $lines.Add("预计剩余可节省空间: $(Format-Bytes -Bytes $remainingSavedBytes)")
+    $lines.Add("本次扫描全部优化预计可节省空间: $(Format-Bytes -Bytes $totalEstimatedSavedBytes)")
     $lines.Add("最后更新时间: $($Task.updatedAt)")
 
     if ($failed.Count -gt 0) {
@@ -789,6 +956,33 @@ function Read-ChoiceOrDefault {
     }
 }
 
+function Read-MenuChoiceOrDefault {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Options,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DefaultKey
+    )
+
+    $orderedKeys = @($Options.Keys | Sort-Object)
+    while ($true) {
+        foreach ($key in $orderedKeys) {
+            Write-Host ("  {0}. {1}" -f $key, $Options[$key])
+        }
+
+        $selectedKey = Read-InputOrDefault -Prompt $Prompt -DefaultValue $DefaultKey
+        if ($Options.ContainsKey($selectedKey)) {
+            return [string]$Options[$selectedKey]
+        }
+
+        Write-Host ("请输入以下编号之一: {0}" -f ($orderedKeys -join ", ")) -ForegroundColor Yellow
+    }
+}
+
 function Read-YesNoOrDefault {
     param(
         [Parameter(Mandatory = $true)]
@@ -819,8 +1013,8 @@ function Get-OutputExtension {
     )
 
     $extension = [System.IO.Path]::GetExtension($InputPath).ToLowerInvariant()
-    if ($extension -in @(".mp4", ".m4v", ".mov", ".mkv")) {
-        return $extension
+    if ($extension -eq ".mkv") {
+        return ".mkv"
     }
 
     return ".mp4"
@@ -832,8 +1026,7 @@ function Test-ReplaceOriginalSupported {
         [string]$InputPath
     )
 
-    $extension = [System.IO.Path]::GetExtension($InputPath).ToLowerInvariant()
-    return ($extension -in @(".mp4", ".m4v", ".mov", ".mkv"))
+    return $true
 }
 
 function Get-DefaultOutputPath {
@@ -946,20 +1139,39 @@ function Replace-OriginalFile {
         [switch]$KeepBackup
     )
 
+    $sourceDirectory = Split-Path -Path $SourcePath -Parent
+    $sourceBaseName = [System.IO.Path]::GetFileNameWithoutExtension($SourcePath)
+    $outputExtension = [System.IO.Path]::GetExtension($OutputPath)
+    $destinationPath = Join-Path -Path $sourceDirectory -ChildPath ("{0}{1}" -f $sourceBaseName, $outputExtension)
+
+    if (($destinationPath -ne $SourcePath) -and (Test-Path -LiteralPath $destinationPath)) {
+        throw "替换原文件失败，目标输出路径已存在: $destinationPath"
+    }
+
     $backupPath = New-BackupPath -InputPath $SourcePath
     Move-Item -LiteralPath $SourcePath -Destination $backupPath
 
     try {
-        Move-Item -LiteralPath $OutputPath -Destination $SourcePath
+        Move-Item -LiteralPath $OutputPath -Destination $destinationPath
         if (-not $KeepBackup) {
             Remove-Item -LiteralPath $backupPath -Force
-            return $null
+            return [pscustomobject]@{
+                BackupPath = $null
+                OutputPath = $destinationPath
+            }
         }
 
-        return $backupPath
+        return [pscustomobject]@{
+            BackupPath = $backupPath
+            OutputPath = $destinationPath
+        }
     } catch {
         if (Test-Path -LiteralPath $OutputPath) {
             Remove-Item -LiteralPath $OutputPath -Force
+        }
+
+        if (($destinationPath -ne $SourcePath) -and (Test-Path -LiteralPath $destinationPath)) {
+            Remove-Item -LiteralPath $destinationPath -Force -ErrorAction SilentlyContinue
         }
 
         if (-not (Test-Path -LiteralPath $SourcePath) -and (Test-Path -LiteralPath $backupPath)) {
@@ -1029,6 +1241,37 @@ function Get-FfmpegProgressSeconds {
     return 0.0
 }
 
+function Write-ParallelProgressSnapshot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [double]$Percent,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Status,
+
+        [double]$EtaSec = 0.0
+    )
+
+    $progressFile = $env:VIDEO_COMPASS_PARALLEL_PROGRESS_FILE
+    if ([string]::IsNullOrWhiteSpace($progressFile)) {
+        return
+    }
+
+    $payload = [pscustomobject]@{
+        label = $env:VIDEO_COMPASS_PARALLEL_PROGRESS_LABEL
+        percent = [Math]::Round($Percent, 2)
+        status = $Status
+        etaSec = [Math]::Round($EtaSec, 2)
+        updatedAt = [DateTime]::UtcNow.ToString("o")
+    }
+
+    try {
+        $json = $payload | ConvertTo-Json -Depth 3
+        [System.IO.File]::WriteAllText($progressFile, $json, [System.Text.Encoding]::UTF8)
+    } catch {
+    }
+}
+
 function Update-EncodeProgressDisplay {
     param(
         [Parameter(Mandatory = $true)]
@@ -1056,6 +1299,7 @@ function Update-EncodeProgressDisplay {
 
     $currentStatus = ("{0:N1}% | 当前文件预计剩余 {1}" -f $currentPercent, (Format-DurationClock -TotalSeconds $currentEtaSec))
     Write-Progress -Id 1 -Activity "正在压缩当前文件" -Status $currentStatus -PercentComplete $currentPercent
+    Write-ParallelProgressSnapshot -Percent $currentPercent -Status $currentStatus -EtaSec $currentEtaSec
 
     $batchTotalCount = [int](ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_TOTAL_COUNT)
     if ($batchTotalCount -le 0) {
@@ -1133,13 +1377,17 @@ function Invoke-FfmpegWithProgress {
     $currentStartedAtUtc = [DateTime]::UtcNow
     $progressState = @{}
     $processStarted = $false
+    $jobHandle = [IntPtr]::Zero
 
     try {
         Initialize-VideoCompassExitHandling
 
         [void]$process.Start()
         $processStarted = $true
+        $jobHandle = New-VideoCompassKillOnCloseJob
+        Add-VideoCompassProcessToJob -JobHandle $jobHandle -Process $process
         Update-VideoCompassActiveEncodeProcessId -ProcessId $process.Id
+        Update-VideoCompassActiveEncodeJobHandle -JobHandle $jobHandle
 
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
@@ -1168,6 +1416,12 @@ function Invoke-FfmpegWithProgress {
         }
     } finally {
         Write-Progress -Id 1 -Activity "正在压缩当前文件" -Completed
+        if ($jobHandle -ne [IntPtr]::Zero) {
+            try {
+                Close-VideoCompassJobHandle -JobHandle $jobHandle
+            } catch {
+            }
+        }
     }
 }
 
@@ -1201,7 +1455,7 @@ function Invoke-EncodeWorkflow {
 
     $resolvedInputPath = (Resolve-Path -LiteralPath $InputPath).Path
     if ($ReplaceOriginal -and (-not (Test-ReplaceOriginalSupported -InputPath $resolvedInputPath))) {
-        throw "只有 mp4、m4v、mov、mkv 输入文件支持直接替换原文件。"
+        throw "当前输入文件不支持直接替换原文件。"
     }
 
     $resolvedOutputPath = $null
@@ -1252,7 +1506,7 @@ function Invoke-EncodeWorkflow {
     Write-Host ("输出位置: {0}" -f $resolvedOutputPath) -ForegroundColor DarkGray
 
     Initialize-VideoCompassExitHandling
-    Set-VideoCompassActiveEncodeContext -ProcessId 0 -OutputPath $resolvedOutputPath
+    Set-VideoCompassActiveEncodeContext -ProcessId 0 -OutputPath $resolvedOutputPath -JobHandle ([IntPtr]::Zero)
 
     try {
         $ffmpegResult = Invoke-FfmpegWithProgress -FfmpegPath $FfmpegPath -Arguments $arguments -SourceDurationSec $sourceInfo.DurationSec
@@ -1280,8 +1534,9 @@ function Invoke-EncodeWorkflow {
 
         $backupPath = $null
         if ($ReplaceOriginal) {
-            $backupPath = Replace-OriginalFile -SourcePath $resolvedInputPath -OutputPath $resolvedOutputPath -KeepBackup:$KeepBackup
-            $resolvedOutputPath = $resolvedInputPath
+            $replaceResult = Replace-OriginalFile -SourcePath $resolvedInputPath -OutputPath $resolvedOutputPath -KeepBackup:$KeepBackup
+            $backupPath = $replaceResult.BackupPath
+            $resolvedOutputPath = $replaceResult.OutputPath
         }
 
         [pscustomobject]@{

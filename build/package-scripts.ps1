@@ -20,6 +20,7 @@ $scriptFileNames = @(
     "encode-hevc-cpu-ffmpeg.ps1",
     "encode-hevc-nvenc-ffmpeg.ps1",
     "encode-hevc-qsv-ffmpeg.ps1",
+    "invoke-encode-worker.ps1",
     "repair-zero-system-bitrate.ps1",
     "video-compass-common.ps1"
 )
