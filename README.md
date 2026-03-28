@@ -100,11 +100,10 @@ powershell -ExecutionPolicy Bypass -File .\check-video-compass-env.ps1 -InstallF
 ### 1. 扫描目录
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\analyze-video-bitrate.ps1 `
-  -RootPath 'xxxx\source-folder' `
-  -ThresholdKbps 4500 `
-  -TargetKbps 3500
+powershell -ExecutionPolicy Bypass -File .\analyze-video-bitrate.ps1
 ```
+
+根据提示填写参数，或直接回车使用默认值。
 
 运行结束后会生成一个任务目录，例如：
 
@@ -126,31 +125,26 @@ tasks/<目录名>__scan-4500__target-3500/
 ### 2. 按任务批量压缩
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
-  -TaskFolder 'xxxx\tasks\source-folder__scan-4500__target-3500' `
-  -Count 1 `
-  -ParallelCount 2 `
-  -Encoder qsv `
-  -AudioCodec aac `
-  -ReplaceOriginalMode yes `
-  -KeepBackupMode no
+powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1
 ```
+
+根据提示填写参数，或直接回车使用默认值。
 
 ### 3. 单文件压缩
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\encode-hevc-nvenc-ffmpeg.ps1 `
-  -InputPath 'xxxx\demo.mp4' `
-  -VideoBitrateKbps 3500 `
-  -ReplaceOriginal
+powershell -ExecutionPolicy Bypass -File .\encode-hevc-nvenc-ffmpeg.ps1
 ```
+
+根据提示填写参数，或直接回车使用默认值。
 
 ### 4. 修复 Windows 码率为 0 的元数据
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\repair-zero-system-bitrate.ps1 `
-  -RootPath 'xxxx\source-folder'
+powershell -ExecutionPolicy Bypass -File .\repair-zero-system-bitrate.ps1
 ```
+
+根据提示填写参数，或直接回车使用默认值。
 
 当前主要对 `.mp4 / .mov / .m4v` 的 Windows 码率元数据修复更可靠。
 
@@ -313,4 +307,3 @@ powershell -ExecutionPolicy Bypass -File .\repair-zero-system-bitrate.ps1 `
 - 先用 `Count 1` 做验证
 - 确认效果后，再逐步放大到 `Count 3`、`Count 5`
 - 如果浏览器或播放器已经占用某块显卡，尽量不要再让同一块显卡同时承担编码
-
