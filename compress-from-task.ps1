@@ -103,12 +103,13 @@ function Update-ParallelBatchProgress {
     }
 
     $status = if ($CompletedCount -gt 0) {
-        "已完成 $CompletedCount/$BatchTotalCount | 运行中 $RunningCount | 预计剩余 $(Format-DurationClock -TotalSeconds $etaSec)"
+        "本轮预计剩余 $(Format-DurationClock -TotalSeconds $etaSec)"
     } else {
-        "已完成 0/$BatchTotalCount | 运行中 $RunningCount | 预计剩余计算中..."
+        "本轮预计剩余计算中..."
     }
 
-    Write-Progress -Id 2 -Activity "批量压缩任务" -Status $status -PercentComplete $percent
+    $currentOperation = "已完成 $CompletedCount/$BatchTotalCount | 运行中 $RunningCount"
+    Write-Progress -Id 2 -Activity "批量压缩任务" -Status $status -CurrentOperation $currentOperation -PercentComplete $percent
 }
 
 function Resolve-WorkerPowerShellPath {
@@ -230,15 +231,16 @@ function Update-ParallelWorkerProgressDisplays {
         $worker = $activeBySlot[$slotKey]
         $payload = Read-ParallelWorkerPayload -FilePath $worker.ProgressFilePath
         if ($payload) {
-            $statusParts = New-Object System.Collections.Generic.List[string]
+            $currentOperationParts = New-Object System.Collections.Generic.List[string]
             if ($payload.label) {
-                $statusParts.Add([string]$payload.label)
+                $currentOperationParts.Add([string]$payload.label)
             }
-            if ($payload.status) {
-                $statusParts.Add([string]$payload.status)
+            if ($payload.currentOperation) {
+                $currentOperationParts.Add([string]$payload.currentOperation)
             }
 
-            Write-Progress -Id $progressId -Activity ("并行任务槽位 {0}" -f $slotId) -Status ($statusParts -join " | ") -PercentComplete ([double]$payload.percent)
+            $statusText = if ($payload.status) { [string]$payload.status } else { "等待进度上报..." }
+            Write-Progress -Id $progressId -Activity ("并行任务槽位 {0}" -f $slotId) -Status $statusText -CurrentOperation ($currentOperationParts -join " | ") -PercentComplete ([double]$payload.percent)
         } else {
             Write-Progress -Id $progressId -Activity ("并行任务槽位 {0}" -f $slotId) -Status "等待进度上报..." -PercentComplete 0
         }
@@ -645,6 +647,8 @@ if (-not (Test-Path -LiteralPath $encoderScriptPath)) {
 }
 
 $batchTotalCount = $pendingItems.Count
+$batchTotalSizeBytes = Get-SumOrZero -Items $pendingItems -PropertyName "sizeBytes"
+$batchEstimatedSavedBytes = Get-SumOrZero -Items $pendingItems -PropertyName "estimatedSavedBytes"
 $batchTotalMediaSec = Get-SumOrZero -Items $pendingItems -PropertyName "durationSec"
 $batchCompletedMediaSec = 0.0
 $batchStartedAtUtc = [DateTime]::UtcNow
@@ -653,6 +657,11 @@ $failedCount = 0
 $skippedCount = 0
 $workingDirectory = $PSScriptRoot
 $parallelWorkerHostJobHandle = [IntPtr]::Zero
+
+Write-Host ""
+Write-Host ("本轮待压缩文件数: {0}" -f $batchTotalCount) -ForegroundColor Cyan
+Write-Host ("本轮待压缩总体积: {0}" -f (Format-Bytes -Bytes $batchTotalSizeBytes)) -ForegroundColor Cyan
+Write-Host ("本轮预计可节省空间: {0}" -f (Format-Bytes -Bytes $batchEstimatedSavedBytes)) -ForegroundColor DarkCyan
 
 if ($ParallelCount -eq 1) {
     $batchIndex = 0

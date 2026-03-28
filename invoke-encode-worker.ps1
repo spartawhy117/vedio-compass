@@ -74,7 +74,8 @@ try {
     $progressPayload = [pscustomobject]@{
         label = $ProgressLabel
         percent = 100.0
-        status = "100.0% | completed"
+        status = "当前文件预计剩余 00:00"
+        currentOperation = "已完成，等待主任务收尾"
         etaSec = 0.0
         updatedAt = [DateTime]::UtcNow.ToString("o")
     }

@@ -888,7 +888,8 @@ function Read-InputOrDefault {
         [string]$DefaultValue
     )
 
-    $response = Read-Host "$Prompt（直接回车使用默认值: $DefaultValue）"
+    Write-Host ("{0}（直接回车使用默认值: {1}）: " -f $Prompt, $DefaultValue) -NoNewline
+    $response = Read-Host
     if ([string]::IsNullOrWhiteSpace($response)) {
         return $DefaultValue
     }
@@ -903,7 +904,8 @@ function Read-RequiredInput {
     )
 
     while ($true) {
-        $response = Read-Host $Prompt
+        Write-Host ("{0}: " -f $Prompt) -NoNewline
+        $response = Read-Host
         if (-not [string]::IsNullOrWhiteSpace($response)) {
             return $response.Trim()
         }
@@ -946,7 +948,7 @@ function Read-ChoiceOrDefault {
 
     $normalizedChoices = $Choices | ForEach-Object { $_.ToLowerInvariant() }
     while ($true) {
-        $value = Read-InputOrDefault -Prompt "$Prompt [$($Choices -join '/')] " -DefaultValue $DefaultValue
+        $value = Read-InputOrDefault -Prompt ("{0} [{1}]" -f $Prompt, ($Choices -join '/')) -DefaultValue $DefaultValue
         $normalized = $value.ToLowerInvariant()
         if ($normalizedChoices -contains $normalized) {
             return $normalized
@@ -1249,6 +1251,8 @@ function Write-ParallelProgressSnapshot {
         [Parameter(Mandatory = $true)]
         [string]$Status,
 
+        [string]$CurrentOperation = "",
+
         [double]$EtaSec = 0.0
     )
 
@@ -1261,6 +1265,7 @@ function Write-ParallelProgressSnapshot {
         label = $env:VIDEO_COMPASS_PARALLEL_PROGRESS_LABEL
         percent = [Math]::Round($Percent, 2)
         status = $Status
+        currentOperation = $CurrentOperation
         etaSec = [Math]::Round($EtaSec, 2)
         updatedAt = [DateTime]::UtcNow.ToString("o")
     }
@@ -1297,9 +1302,10 @@ function Update-EncodeProgressDisplay {
         }
     }
 
-    $currentStatus = ("{0:N1}% | 当前文件预计剩余 {1}" -f $currentPercent, (Format-DurationClock -TotalSeconds $currentEtaSec))
-    Write-Progress -Id 1 -Activity "正在压缩当前文件" -Status $currentStatus -PercentComplete $currentPercent
-    Write-ParallelProgressSnapshot -Percent $currentPercent -Status $currentStatus -EtaSec $currentEtaSec
+    $currentStatus = ("当前文件预计剩余 {0}" -f (Format-DurationClock -TotalSeconds $currentEtaSec))
+    $currentOperation = ("已编码 {0:N1}%" -f $currentPercent)
+    Write-Progress -Id 1 -Activity "正在压缩当前文件" -Status $currentStatus -CurrentOperation $currentOperation -PercentComplete $currentPercent
+    Write-ParallelProgressSnapshot -Percent $currentPercent -Status $currentStatus -CurrentOperation $currentOperation -EtaSec $currentEtaSec
 
     $batchTotalCount = [int](ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_TOTAL_COUNT)
     if ($batchTotalCount -le 0) {
@@ -1312,8 +1318,9 @@ function Update-EncodeProgressDisplay {
 
     if ($batchTotalMediaSec -le 0) {
         $batchPercent = [Math]::Min((([Math]::Max($batchCurrentIndex - 1, 0) + ($currentPercent / 100.0)) / $batchTotalCount) * 100.0, 100.0)
-        $batchStatus = ("第 {0}/{1} 个 | 本轮预计剩余计算中..." -f $batchCurrentIndex, $batchTotalCount)
-        Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -PercentComplete $batchPercent
+        $batchStatus = "本轮预计剩余计算中..."
+        $batchOperation = ("第 {0}/{1} 个" -f $batchCurrentIndex, $batchTotalCount)
+        Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent
         return
     }
 
@@ -1339,8 +1346,21 @@ function Update-EncodeProgressDisplay {
         }
     }
 
-    $batchStatus = ("第 {0}/{1} 个 | 本轮预计剩余 {2}" -f $batchCurrentIndex, $batchTotalCount, (Format-DurationClock -TotalSeconds $batchEtaSec))
-    Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -PercentComplete $batchPercent
+    $batchStatus = ("本轮预计剩余 {0}" -f (Format-DurationClock -TotalSeconds $batchEtaSec))
+    $batchOperation = ("第 {0}/{1} 个" -f $batchCurrentIndex, $batchTotalCount)
+    Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent
+}
+
+function Show-EncodeFinalizationProgress {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Status,
+
+        [string]$CurrentOperation = "正在收尾..."
+    )
+
+    Write-Progress -Id 1 -Activity "正在压缩当前文件" -Status $Status -CurrentOperation $CurrentOperation -PercentComplete 100
+    Write-ParallelProgressSnapshot -Percent 100 -Status $Status -CurrentOperation $CurrentOperation -EtaSec 0
 }
 
 function Invoke-FfmpegWithProgress {
@@ -1530,10 +1550,17 @@ function Invoke-EncodeWorkflow {
             throw "ffmpeg 执行失败，退出码 $($ffmpegResult.ExitCode)。"
         }
 
+        Show-EncodeFinalizationProgress -Status "编码已完成，正在校验输出文件..." -CurrentOperation "ffmpeg 已结束，正在做完整性检查"
         $validatedOutput = Test-OutputForReplacement -ProbePath $ProbePath -SourcePath $resolvedInputPath -OutputPath $resolvedOutputPath -DurationToleranceSec $DurationToleranceSec
 
         $backupPath = $null
         if ($ReplaceOriginal) {
+            $replaceStatus = if ($KeepBackup) {
+                "编码已完成，正在替换原文件并保留备份..."
+            } else {
+                "编码已完成，正在替换原文件..."
+            }
+            Show-EncodeFinalizationProgress -Status $replaceStatus -CurrentOperation "正在移动文件并完成收尾"
             $replaceResult = Replace-OriginalFile -SourcePath $resolvedInputPath -OutputPath $resolvedOutputPath -KeepBackup:$KeepBackup
             $backupPath = $replaceResult.BackupPath
             $resolvedOutputPath = $replaceResult.OutputPath
