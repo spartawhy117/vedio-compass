@@ -49,9 +49,108 @@ function Initialize-VideoCompassGlobals {
     if (-not (Get-Variable -Name "VideoCompassJobObjectTypesInitialized" -Scope Global -ErrorAction SilentlyContinue)) {
         $global:VideoCompassJobObjectTypesInitialized = $false
     }
+
+    if (-not (Get-Variable -Name "VideoCompassProgressRenderState" -Scope Global -ErrorAction SilentlyContinue)) {
+        $global:VideoCompassProgressRenderState = @{}
+    }
 }
 
 Initialize-VideoCompassGlobals
+
+function Reset-VideoCompassProgressRenderState {
+    $global:VideoCompassProgressRenderState = @{}
+}
+
+function Write-VideoCompassProgress {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Id,
+
+        [int]$ParentId = -1,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Activity,
+
+        [string]$Status = "",
+
+        [string]$CurrentOperation = "",
+
+        [double]$PercentComplete = 0.0,
+
+        [switch]$Completed,
+
+        [switch]$HideProgressBar,
+
+        [int]$ThrottleMilliseconds = 700,
+
+        [int]$FastChangeThrottleMilliseconds = 250,
+
+        [double]$MinimumPercentDelta = 0.5
+    )
+
+    if (-not $global:VideoCompassProgressRenderState) {
+        Reset-VideoCompassProgressRenderState
+    }
+
+    $stateKey = [string]$Id
+    $now = [DateTime]::UtcNow
+    $lastState = $null
+    if ($global:VideoCompassProgressRenderState.ContainsKey($stateKey)) {
+        $lastState = $global:VideoCompassProgressRenderState[$stateKey]
+    }
+
+    $safePercent = [Math]::Round([Math]::Min([Math]::Max($PercentComplete, 0.0), 100.0), 2)
+    $shouldWrite = $true
+
+    if ($lastState) {
+        $elapsedMs = ($now - $lastState.WrittenAt).TotalMilliseconds
+        $percentDelta = [Math]::Abs($safePercent - [double]$lastState.PercentComplete)
+        $parentChanged = ($ParentId -ne [int]$lastState.ParentId)
+        $hideBarChanged = ([bool]$HideProgressBar -ne [bool]$lastState.HideProgressBar)
+        $activityChanged = ($Activity -ne [string]$lastState.Activity)
+        $statusChanged = ($Status -ne [string]$lastState.Status)
+        $operationChanged = ($CurrentOperation -ne [string]$lastState.CurrentOperation)
+        $completedChanged = ([bool]$Completed -ne [bool]$lastState.Completed)
+
+        if (-not $parentChanged -and -not $hideBarChanged -and -not $activityChanged -and -not $statusChanged -and -not $operationChanged -and -not $completedChanged -and ($percentDelta -lt 0.01)) {
+            $shouldWrite = $false
+        } elseif ($Completed -and -not [bool]$lastState.Completed) {
+            $shouldWrite = $true
+        } elseif ($safePercent -ge 100.0 -and [double]$lastState.PercentComplete -lt 100.0) {
+            $shouldWrite = $true
+        } elseif ($parentChanged -or $hideBarChanged -or $activityChanged -or $statusChanged -or $operationChanged -or $percentDelta -ge $MinimumPercentDelta) {
+            $shouldWrite = ($elapsedMs -ge $FastChangeThrottleMilliseconds)
+        } else {
+            $shouldWrite = ($elapsedMs -ge $ThrottleMilliseconds)
+        }
+    }
+
+    if (-not $shouldWrite) {
+        return
+    }
+
+    if ($Completed) {
+        Write-Progress -Id $Id -Activity $Activity -Completed
+    } else {
+        $percentArgument = if ($HideProgressBar) { -1 } else { $safePercent }
+        if ($ParentId -ge 0) {
+            Write-Progress -Id $Id -ParentId $ParentId -Activity $Activity -Status $Status -CurrentOperation $CurrentOperation -PercentComplete $percentArgument
+        } else {
+            Write-Progress -Id $Id -Activity $Activity -Status $Status -CurrentOperation $CurrentOperation -PercentComplete $percentArgument
+        }
+    }
+
+    $global:VideoCompassProgressRenderState[$stateKey] = @{
+        ParentId = $ParentId
+        HideProgressBar = [bool]$HideProgressBar
+        Activity = $Activity
+        Status = $Status
+        CurrentOperation = $CurrentOperation
+        PercentComplete = $safePercent
+        Completed = [bool]$Completed
+        WrittenAt = $now
+    }
+}
 
 function Set-VideoCompassActiveEncodeContext {
     param(
@@ -1312,6 +1411,10 @@ function Write-ParallelProgressSnapshot {
     }
 }
 
+function Test-VideoCompassTextOnlyMainProgress {
+    return ($env:VIDEO_COMPASS_TEXT_ONLY_MAIN_PROGRESS -eq "1")
+}
+
 function Update-EncodeProgressDisplay {
     param(
         [Parameter(Mandatory = $true)]
@@ -1343,9 +1446,10 @@ function Update-EncodeProgressDisplay {
     } else {
         "当前文件预计剩余估算中..."
     }
+    $textOnlyMainProgress = Test-VideoCompassTextOnlyMainProgress
     $currentSnapshotEtaSec = if ($currentEtaReady) { $currentEtaSec } else { 0.0 }
     $currentOperation = ("已编码 {0:N1}%" -f $currentPercent)
-    Write-Progress -Id 1 -Activity "正在压缩当前文件" -Status $currentStatus -CurrentOperation $currentOperation -PercentComplete $currentPercent
+    Write-VideoCompassProgress -Id 1 -Activity "正在压缩当前文件" -Status $currentStatus -CurrentOperation $currentOperation -PercentComplete $currentPercent -HideProgressBar:$textOnlyMainProgress
     Write-ParallelProgressSnapshot -Percent $currentPercent -Status $currentStatus -CurrentOperation $currentOperation -EtaSec $currentSnapshotEtaSec
 
     $batchTotalCount = [int](ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_TOTAL_COUNT)
@@ -1367,7 +1471,7 @@ function Update-EncodeProgressDisplay {
         if (-not [string]::IsNullOrWhiteSpace($batchSummaryText)) {
             $batchOperation = ("{0} | {1}" -f $batchOperation, $batchSummaryText)
         }
-        Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent
+        Write-VideoCompassProgress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent -HideProgressBar:$textOnlyMainProgress
         return
     }
 
@@ -1404,7 +1508,7 @@ function Update-EncodeProgressDisplay {
     if (-not [string]::IsNullOrWhiteSpace($batchSummaryText)) {
         $batchOperation = ("{0} | {1}" -f $batchOperation, $batchSummaryText)
     }
-    Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent
+    Write-VideoCompassProgress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent -HideProgressBar:$textOnlyMainProgress
 }
 
 function Show-EncodeFinalizationProgress {
@@ -1415,7 +1519,8 @@ function Show-EncodeFinalizationProgress {
         [string]$CurrentOperation = "正在收尾..."
     )
 
-    Write-Progress -Id 1 -Activity "正在压缩当前文件" -Status $Status -CurrentOperation $CurrentOperation -PercentComplete 100
+    $textOnlyMainProgress = Test-VideoCompassTextOnlyMainProgress
+    Write-VideoCompassProgress -Id 1 -Activity "正在压缩当前文件" -Status $Status -CurrentOperation $CurrentOperation -PercentComplete 100 -HideProgressBar:$textOnlyMainProgress
     Write-ParallelProgressSnapshot -Percent 100 -Status $Status -CurrentOperation $CurrentOperation -EtaSec 0
 }
 
@@ -1484,14 +1589,14 @@ function Invoke-FfmpegWithProgress {
 
         $stderr = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
-        Write-Progress -Id 1 -Activity "正在压缩当前文件" -Completed
+        Write-VideoCompassProgress -Id 1 -Activity "正在压缩当前文件" -Completed
 
         [pscustomobject]@{
             ExitCode = $process.ExitCode
             StdErr = $stderr
         }
     } finally {
-        Write-Progress -Id 1 -Activity "正在压缩当前文件" -Completed
+        Write-VideoCompassProgress -Id 1 -Activity "正在压缩当前文件" -Completed
         if ($jobHandle -ne [IntPtr]::Zero) {
             try {
                 Close-VideoCompassJobHandle -JobHandle $jobHandle

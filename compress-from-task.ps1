@@ -23,6 +23,18 @@ $global:VideoCompassShutdownReason = ""
 Clear-VideoCompassActiveTaskContext
 Clear-VideoCompassActiveEncodeContext
 
+function Clear-AllVideoCompassProgress {
+    Reset-VideoCompassProgressRenderState
+    foreach ($progressId in @(1, 2, 21, 22)) {
+        try {
+            Write-VideoCompassProgress -Id $progressId -Activity "" -Completed
+        } catch {
+        }
+    }
+}
+
+Clear-AllVideoCompassProgress
+
 function Save-TaskArtifacts {
     param(
         [Parameter(Mandatory = $true)]
@@ -90,6 +102,13 @@ function Update-ParallelBatchProgress {
 
         [double]$BatchEstimatedSavedBytes = 0.0,
 
+        [double]$BatchTotalMediaSec = 0.0,
+
+        [double]$BatchCompletedMediaSec = 0.0,
+
+        [AllowEmptyCollection()]
+        [object[]]$ActiveWorkers = @(),
+
         [Parameter(Mandatory = $true)]
         [DateTime]$BatchStartedAtUtc
     )
@@ -98,26 +117,61 @@ function Update-ParallelBatchProgress {
         return
     }
 
-    $percent = [Math]::Min((($CompletedCount / $BatchTotalCount) * 100.0), 100.0)
     $elapsedSec = [Math]::Max(([DateTime]::UtcNow - $BatchStartedAtUtc).TotalSeconds, 0.001)
-    $etaSec = 0.0
-    if ($CompletedCount -gt 0) {
-        $avgSecPerItem = $elapsedSec / $CompletedCount
-        $etaSec = [Math]::Max(($BatchTotalCount - $CompletedCount) * $avgSecPerItem, 0.0)
+
+    $partialCompletedCount = [double]$CompletedCount
+    $partialCompletedMediaSec = [double]$BatchCompletedMediaSec
+    foreach ($worker in $ActiveWorkers) {
+        $payload = Read-ParallelWorkerPayload -FilePath $worker.ProgressFilePath
+        if (-not $payload) {
+            continue
+        }
+
+        $workerPercent = [Math]::Min([Math]::Max((ConvertTo-DoubleOrZero -Value $payload.percent), 0.0), 100.0)
+        $fraction = $workerPercent / 100.0
+        $partialCompletedCount += $fraction
+        if ($worker.Item -and $worker.Item.PSObject.Properties.Match("durationSec").Count -gt 0) {
+            $partialCompletedMediaSec += ([double]$worker.Item.durationSec * $fraction)
+        }
     }
 
-    $status = if ($CompletedCount -gt 0) {
+    $percent = 0.0
+    $etaSec = 0.0
+    $etaReady = $false
+    if ($BatchTotalMediaSec -gt 0.1) {
+        $percent = [Math]::Min(($partialCompletedMediaSec / $BatchTotalMediaSec) * 100.0, 100.0)
+        if ($partialCompletedMediaSec -gt 0.1) {
+            $mediaRate = $partialCompletedMediaSec / $elapsedSec
+            if ($mediaRate -gt 0) {
+                $etaSec = [Math]::Max(($BatchTotalMediaSec - $partialCompletedMediaSec) / $mediaRate, 0.0)
+            }
+        }
+        $etaReady = Test-EtaDisplayReady -PercentComplete $percent -ElapsedSec $elapsedSec -ProcessedSec $partialCompletedMediaSec -MinimumPercent 2.0 -MinimumElapsedSec 15.0 -MinimumProcessedSec 15.0
+    } else {
+        $percent = [Math]::Min((($partialCompletedCount / $BatchTotalCount) * 100.0), 100.0)
+        if ($partialCompletedCount -gt 0.1) {
+            $avgSecPerItem = $elapsedSec / $partialCompletedCount
+            $etaSec = [Math]::Max(($BatchTotalCount - $partialCompletedCount) * $avgSecPerItem, 0.0)
+        }
+        $etaReady = Test-EtaDisplayReady -PercentComplete $percent -ElapsedSec $elapsedSec -ProcessedSec $partialCompletedCount -MinimumPercent 2.0 -MinimumElapsedSec 15.0 -MinimumProcessedSec 0.2
+    }
+
+    $status = if ($etaReady) {
         "本轮预计剩余 $(Format-DurationClock -TotalSeconds $etaSec)"
     } else {
         "本轮预计剩余计算中..."
     }
 
-    $currentOperation = "已完成 $CompletedCount/$BatchTotalCount | 运行中 $RunningCount"
+    $currentOperationSegments = New-Object System.Collections.Generic.List[string]
+    $currentOperationSegments.Add("已完成 $CompletedCount/$BatchTotalCount")
+    $currentOperationSegments.Add("运行中 $RunningCount")
+    $currentOperationSegments.Add(("进度 {0:N1}%" -f $percent))
     $batchSummaryText = Get-BatchProgressSummaryText -TotalSizeBytes $BatchTotalSizeBytes -EstimatedSavedBytes $BatchEstimatedSavedBytes
     if (-not [string]::IsNullOrWhiteSpace($batchSummaryText)) {
-        $currentOperation = ("{0} | {1}" -f $currentOperation, $batchSummaryText)
+        $currentOperationSegments.Add($batchSummaryText)
     }
-    Write-Progress -Id 2 -Activity "批量压缩任务" -Status $status -CurrentOperation $currentOperation -PercentComplete $percent
+    $currentOperation = $currentOperationSegments -join " | "
+    Write-VideoCompassProgress -Id 2 -Activity "批量压缩任务" -Status $status -CurrentOperation $currentOperation -PercentComplete $percent -MinimumPercentDelta 0.1 -HideProgressBar
 }
 
 function Write-BatchSelectionSummary {
@@ -252,26 +306,20 @@ function Update-ParallelWorkerProgressDisplays {
         $progressId = 20 + $slotId
         $slotKey = [string]$slotId
         if (-not $activeBySlot.ContainsKey($slotKey)) {
-            Write-Progress -Id $progressId -Activity ("并行任务槽位 {0}" -f $slotId) -Completed
+            Write-VideoCompassProgress -Id $progressId -ParentId 2 -Activity ("槽位 {0}" -f $slotId) -Completed
             continue
         }
 
         $worker = $activeBySlot[$slotKey]
         $payload = Read-ParallelWorkerPayload -FilePath $worker.ProgressFilePath
-        if ($payload) {
-            $currentOperationParts = New-Object System.Collections.Generic.List[string]
-            if ($payload.label) {
-                $currentOperationParts.Add([string]$payload.label)
-            }
-            if ($payload.currentOperation) {
-                $currentOperationParts.Add([string]$payload.currentOperation)
-            }
-
-            $statusText = if ($payload.status) { [string]$payload.status } else { "等待进度上报..." }
-            Write-Progress -Id $progressId -Activity ("并行任务槽位 {0}" -f $slotId) -Status $statusText -CurrentOperation ($currentOperationParts -join " | ") -PercentComplete ([double]$payload.percent)
-        } else {
-            Write-Progress -Id $progressId -Activity ("并行任务槽位 {0}" -f $slotId) -Status "等待进度上报..." -PercentComplete 0
+        if (-not $payload) {
+            Write-VideoCompassProgress -Id $progressId -ParentId 2 -Activity ("槽位 {0}" -f $slotId) -Status "等待上报..." -PercentComplete 0 -MinimumPercentDelta 0.1 -HideProgressBar
+            continue
         }
+
+        $workerPercent = [Math]::Min([Math]::Max((ConvertTo-DoubleOrZero -Value $payload.percent), 0.0), 100.0)
+        $workerStatus = ("{0:N1}%" -f $workerPercent)
+        Write-VideoCompassProgress -Id $progressId -ParentId 2 -Activity ("槽位 {0}" -f $slotId) -Status $workerStatus -PercentComplete $workerPercent -MinimumPercentDelta 0.1 -HideProgressBar
     }
 }
 
@@ -606,6 +654,8 @@ if ($pendingAvailableCount -eq 0) {
     exit 0
 }
 
+Clear-AllVideoCompassProgress
+
 if (-not $PSBoundParameters.ContainsKey("Count")) {
     $Count = Read-IntOrDefault -Prompt "本次要处理多少个文件" -DefaultValue $pendingAvailableCount
 }
@@ -688,6 +738,7 @@ $parallelWorkerHostJobHandle = [IntPtr]::Zero
 
 $env:VIDEO_COMPASS_BATCH_TOTAL_SIZE_BYTES = $batchTotalSizeBytes.ToString([System.Globalization.CultureInfo]::InvariantCulture)
 $env:VIDEO_COMPASS_BATCH_ESTIMATED_SAVED_BYTES = $batchEstimatedSavedBytes.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+$env:VIDEO_COMPASS_TEXT_ONLY_MAIN_PROGRESS = if ($ParallelCount -eq 1) { "1" } else { "0" }
 
 if ($ParallelCount -eq 1) {
     $batchIndex = 0
@@ -808,10 +859,9 @@ if ($ParallelCount -eq 1) {
                 })
             }
 
-            Update-ParallelWorkerProgressDisplays -ActiveWorkers $activeWorkers -ParallelTotal $ParallelCount
-
             $completedCount = $processed + $failedCount + $skippedCount
-            Update-ParallelBatchProgress -BatchTotalCount $batchTotalCount -CompletedCount $completedCount -RunningCount $activeWorkers.Count -BatchTotalSizeBytes $batchTotalSizeBytes -BatchEstimatedSavedBytes $batchEstimatedSavedBytes -BatchStartedAtUtc $batchStartedAtUtc
+            Update-ParallelBatchProgress -BatchTotalCount $batchTotalCount -CompletedCount $completedCount -RunningCount $activeWorkers.Count -BatchTotalSizeBytes $batchTotalSizeBytes -BatchEstimatedSavedBytes $batchEstimatedSavedBytes -BatchTotalMediaSec $batchTotalMediaSec -BatchCompletedMediaSec $batchCompletedMediaSec -ActiveWorkers ($activeWorkers.ToArray()) -BatchStartedAtUtc $batchStartedAtUtc
+            Update-ParallelWorkerProgressDisplays -ActiveWorkers $activeWorkers -ParallelTotal $ParallelCount
 
             if ($global:VideoCompassShutdownRequested) {
                 if ($parallelWorkerHostJobHandle -ne [IntPtr]::Zero) {
@@ -825,7 +875,7 @@ if ($ParallelCount -eq 1) {
                 foreach ($worker in $activeWorkers.ToArray()) {
                     Reset-TaskItemToPending -TaskItem $worker.Item -TaskObject $task -TaskFolderPath $resolvedTaskFolder -SelectedEncoder $Encoder -ReplaceOriginalValue $replaceOriginal -KeepBackupValue $keepBackup -Reason "父任务中断，已重置为待处理。"
                     Clear-ParallelWorkerArtifacts -Worker $worker
-                    Write-Progress -Id (20 + $worker.SlotId) -Activity ("并行任务槽位 {0}" -f $worker.SlotId) -Completed
+                    Write-VideoCompassProgress -Id (20 + $worker.SlotId) -Activity ("并行任务槽位 {0}" -f $worker.SlotId) -Completed
                 }
 
                 $activeWorkers.Clear()
@@ -865,7 +915,7 @@ if ($ParallelCount -eq 1) {
                     Write-Host $message -ForegroundColor Yellow
                 }
 
-                Write-Progress -Id (20 + $worker.SlotId) -Activity ("并行任务槽位 {0}" -f $worker.SlotId) -Completed
+                Write-VideoCompassProgress -Id (20 + $worker.SlotId) -Activity ("并行任务槽位 {0}" -f $worker.SlotId) -Completed
                 Clear-ParallelWorkerArtifacts -Worker $worker
                 $availableSlots.Enqueue($worker.SlotId)
                 [void]$activeWorkers.Remove($worker)
@@ -881,10 +931,10 @@ if ($ParallelCount -eq 1) {
     }
 }
 
-Write-Progress -Id 1 -Activity "正在压缩当前文件" -Completed
-Write-Progress -Id 2 -Activity "批量压缩任务" -Completed
-Write-Progress -Id 21 -Activity "并行任务槽位 1" -Completed
-Write-Progress -Id 22 -Activity "并行任务槽位 2" -Completed
+Write-VideoCompassProgress -Id 1 -Activity "正在压缩当前文件" -Completed
+Write-VideoCompassProgress -Id 2 -Activity "批量压缩任务" -Completed
+Write-VideoCompassProgress -Id 21 -Activity "并行任务槽位 1" -Completed
+Write-VideoCompassProgress -Id 22 -Activity "并行任务槽位 2" -Completed
 
 Remove-Item Env:VIDEO_COMPASS_BATCH_TOTAL_COUNT -ErrorAction SilentlyContinue
 Remove-Item Env:VIDEO_COMPASS_BATCH_CURRENT_INDEX -ErrorAction SilentlyContinue
@@ -893,6 +943,7 @@ Remove-Item Env:VIDEO_COMPASS_BATCH_COMPLETED_MEDIA_SEC -ErrorAction SilentlyCon
 Remove-Item Env:VIDEO_COMPASS_BATCH_STARTED_AT_UTC -ErrorAction SilentlyContinue
 Remove-Item Env:VIDEO_COMPASS_BATCH_TOTAL_SIZE_BYTES -ErrorAction SilentlyContinue
 Remove-Item Env:VIDEO_COMPASS_BATCH_ESTIMATED_SAVED_BYTES -ErrorAction SilentlyContinue
+Remove-Item Env:VIDEO_COMPASS_TEXT_ONLY_MAIN_PROGRESS -ErrorAction SilentlyContinue
 
 $remainingPending = @($task.items | Where-Object { $_.status -eq "pending" }).Count
 
