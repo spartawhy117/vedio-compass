@@ -86,6 +86,10 @@ function Update-ParallelBatchProgress {
         [Parameter(Mandatory = $true)]
         [int]$RunningCount,
 
+        [double]$BatchTotalSizeBytes = 0.0,
+
+        [double]$BatchEstimatedSavedBytes = 0.0,
+
         [Parameter(Mandatory = $true)]
         [DateTime]$BatchStartedAtUtc
     )
@@ -109,7 +113,31 @@ function Update-ParallelBatchProgress {
     }
 
     $currentOperation = "已完成 $CompletedCount/$BatchTotalCount | 运行中 $RunningCount"
+    $batchSummaryText = Get-BatchProgressSummaryText -TotalSizeBytes $BatchTotalSizeBytes -EstimatedSavedBytes $BatchEstimatedSavedBytes
+    if (-not [string]::IsNullOrWhiteSpace($batchSummaryText)) {
+        $currentOperation = ("{0} | {1}" -f $currentOperation, $batchSummaryText)
+    }
     Write-Progress -Id 2 -Activity "批量压缩任务" -Status $status -CurrentOperation $currentOperation -PercentComplete $percent
+}
+
+function Write-BatchSelectionSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$BatchTotalCount,
+
+        [double]$BatchTotalSizeBytes = 0.0,
+
+        [double]$BatchEstimatedSavedBytes = 0.0
+    )
+
+    $summaryText = Get-BatchProgressSummaryText -TotalSizeBytes $BatchTotalSizeBytes -EstimatedSavedBytes $BatchEstimatedSavedBytes
+    $message = "本轮待压缩文件数: $BatchTotalCount"
+    if (-not [string]::IsNullOrWhiteSpace($summaryText)) {
+        $message = ("{0} | {1}" -f $message, $summaryText)
+    }
+
+    Write-Host ""
+    Write-Host $message -ForegroundColor Cyan
 }
 
 function Resolve-WorkerPowerShellPath {
@@ -658,15 +686,17 @@ $skippedCount = 0
 $workingDirectory = $PSScriptRoot
 $parallelWorkerHostJobHandle = [IntPtr]::Zero
 
-Write-Host ""
-Write-Host ("本轮待压缩文件数: {0}" -f $batchTotalCount) -ForegroundColor Cyan
-Write-Host ("本轮待压缩总体积: {0}" -f (Format-Bytes -Bytes $batchTotalSizeBytes)) -ForegroundColor Cyan
-Write-Host ("本轮预计可节省空间: {0}" -f (Format-Bytes -Bytes $batchEstimatedSavedBytes)) -ForegroundColor DarkCyan
+$env:VIDEO_COMPASS_BATCH_TOTAL_SIZE_BYTES = $batchTotalSizeBytes.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+$env:VIDEO_COMPASS_BATCH_ESTIMATED_SAVED_BYTES = $batchEstimatedSavedBytes.ToString([System.Globalization.CultureInfo]::InvariantCulture)
 
 if ($ParallelCount -eq 1) {
     $batchIndex = 0
     foreach ($item in $pendingItems) {
         $batchIndex++
+
+        if ($batchIndex -eq 1) {
+            Write-BatchSelectionSummary -BatchTotalCount $batchTotalCount -BatchTotalSizeBytes $batchTotalSizeBytes -BatchEstimatedSavedBytes $batchEstimatedSavedBytes
+        }
 
         Write-Host ""
         Write-Host ("当前项目 {0}/{1}" -f $batchIndex, $batchTotalCount) -ForegroundColor Cyan
@@ -754,6 +784,10 @@ if ($ParallelCount -eq 1) {
 
                 $slotId = [int]$availableSlots.Dequeue()
 
+                if ($launchIndex -eq 1) {
+                    Write-BatchSelectionSummary -BatchTotalCount $batchTotalCount -BatchTotalSizeBytes $batchTotalSizeBytes -BatchEstimatedSavedBytes $batchEstimatedSavedBytes
+                }
+
                 Write-Host ""
                 Write-Host ("启动并行任务 {0}/{1}（槽位 {2}）" -f $launchIndex, $batchTotalCount, $slotId) -ForegroundColor Cyan
                 Write-Host ("源文件: {0}" -f $item.path) -ForegroundColor DarkGray
@@ -777,7 +811,7 @@ if ($ParallelCount -eq 1) {
             Update-ParallelWorkerProgressDisplays -ActiveWorkers $activeWorkers -ParallelTotal $ParallelCount
 
             $completedCount = $processed + $failedCount + $skippedCount
-            Update-ParallelBatchProgress -BatchTotalCount $batchTotalCount -CompletedCount $completedCount -RunningCount $activeWorkers.Count -BatchStartedAtUtc $batchStartedAtUtc
+            Update-ParallelBatchProgress -BatchTotalCount $batchTotalCount -CompletedCount $completedCount -RunningCount $activeWorkers.Count -BatchTotalSizeBytes $batchTotalSizeBytes -BatchEstimatedSavedBytes $batchEstimatedSavedBytes -BatchStartedAtUtc $batchStartedAtUtc
 
             if ($global:VideoCompassShutdownRequested) {
                 if ($parallelWorkerHostJobHandle -ne [IntPtr]::Zero) {
@@ -857,6 +891,8 @@ Remove-Item Env:VIDEO_COMPASS_BATCH_CURRENT_INDEX -ErrorAction SilentlyContinue
 Remove-Item Env:VIDEO_COMPASS_BATCH_TOTAL_MEDIA_SEC -ErrorAction SilentlyContinue
 Remove-Item Env:VIDEO_COMPASS_BATCH_COMPLETED_MEDIA_SEC -ErrorAction SilentlyContinue
 Remove-Item Env:VIDEO_COMPASS_BATCH_STARTED_AT_UTC -ErrorAction SilentlyContinue
+Remove-Item Env:VIDEO_COMPASS_BATCH_TOTAL_SIZE_BYTES -ErrorAction SilentlyContinue
+Remove-Item Env:VIDEO_COMPASS_BATCH_ESTIMATED_SAVED_BYTES -ErrorAction SilentlyContinue
 
 $remainingPending = @($task.items | Where-Object { $_.status -eq "pending" }).Count
 

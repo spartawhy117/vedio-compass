@@ -1203,6 +1203,41 @@ function Format-DurationClock {
     return $span.ToString("mm\:ss")
 }
 
+function Get-BatchProgressSummaryText {
+    param(
+        [double]$TotalSizeBytes = 0.0,
+        [double]$EstimatedSavedBytes = 0.0
+    )
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($TotalSizeBytes -gt 0) {
+        $parts.Add(("总量 {0}" -f (Format-Bytes -Bytes $TotalSizeBytes)))
+    }
+
+    if ($EstimatedSavedBytes -gt 0) {
+        $parts.Add(("节省 {0}" -f (Format-Bytes -Bytes $EstimatedSavedBytes)))
+    }
+
+    return ($parts -join " | ")
+}
+
+function Test-EtaDisplayReady {
+    param(
+        [double]$PercentComplete = 0.0,
+        [double]$ElapsedSec = 0.0,
+        [double]$ProcessedSec = 0.0,
+        [double]$MinimumPercent = 5.0,
+        [double]$MinimumElapsedSec = 30.0,
+        [double]$MinimumProcessedSec = 30.0
+    )
+
+    return (
+        ($PercentComplete -ge $MinimumPercent) -and
+        ($ElapsedSec -ge $MinimumElapsedSec) -and
+        ($ProcessedSec -ge $MinimumProcessedSec)
+    )
+}
+
 function ConvertTo-DoubleOrZero {
     param(
         [string]$Value
@@ -1302,10 +1337,16 @@ function Update-EncodeProgressDisplay {
         }
     }
 
-    $currentStatus = ("当前文件预计剩余 {0}" -f (Format-DurationClock -TotalSeconds $currentEtaSec))
+    $currentEtaReady = Test-EtaDisplayReady -PercentComplete $currentPercent -ElapsedSec $currentElapsedSec -ProcessedSec $safeCurrentOutTime
+    $currentStatus = if ($currentEtaReady) {
+        "当前文件预计剩余 {0}" -f (Format-DurationClock -TotalSeconds $currentEtaSec)
+    } else {
+        "当前文件预计剩余估算中..."
+    }
+    $currentSnapshotEtaSec = if ($currentEtaReady) { $currentEtaSec } else { 0.0 }
     $currentOperation = ("已编码 {0:N1}%" -f $currentPercent)
     Write-Progress -Id 1 -Activity "正在压缩当前文件" -Status $currentStatus -CurrentOperation $currentOperation -PercentComplete $currentPercent
-    Write-ParallelProgressSnapshot -Percent $currentPercent -Status $currentStatus -CurrentOperation $currentOperation -EtaSec $currentEtaSec
+    Write-ParallelProgressSnapshot -Percent $currentPercent -Status $currentStatus -CurrentOperation $currentOperation -EtaSec $currentSnapshotEtaSec
 
     $batchTotalCount = [int](ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_TOTAL_COUNT)
     if ($batchTotalCount -le 0) {
@@ -1315,11 +1356,17 @@ function Update-EncodeProgressDisplay {
     $batchCurrentIndex = [int](ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_CURRENT_INDEX)
     $batchTotalMediaSec = ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_TOTAL_MEDIA_SEC
     $batchCompletedMediaSec = ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_COMPLETED_MEDIA_SEC
+    $batchTotalSizeBytes = ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_TOTAL_SIZE_BYTES
+    $batchEstimatedSavedBytes = ConvertTo-DoubleOrZero -Value $env:VIDEO_COMPASS_BATCH_ESTIMATED_SAVED_BYTES
+    $batchSummaryText = Get-BatchProgressSummaryText -TotalSizeBytes $batchTotalSizeBytes -EstimatedSavedBytes $batchEstimatedSavedBytes
 
     if ($batchTotalMediaSec -le 0) {
         $batchPercent = [Math]::Min((([Math]::Max($batchCurrentIndex - 1, 0) + ($currentPercent / 100.0)) / $batchTotalCount) * 100.0, 100.0)
         $batchStatus = "本轮预计剩余计算中..."
         $batchOperation = ("第 {0}/{1} 个" -f $batchCurrentIndex, $batchTotalCount)
+        if (-not [string]::IsNullOrWhiteSpace($batchSummaryText)) {
+            $batchOperation = ("{0} | {1}" -f $batchOperation, $batchSummaryText)
+        }
         Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent
         return
     }
@@ -1336,6 +1383,7 @@ function Update-EncodeProgressDisplay {
     }
 
     $batchEtaSec = 0.0
+    $batchElapsedSec = 0.0
     if ($batchStartedAtUtc) {
         $batchElapsedSec = [Math]::Max(([DateTime]::UtcNow - $batchStartedAtUtc).TotalSeconds, 0.001)
         if ($processedMediaSec -gt 0.1) {
@@ -1346,8 +1394,16 @@ function Update-EncodeProgressDisplay {
         }
     }
 
-    $batchStatus = ("本轮预计剩余 {0}" -f (Format-DurationClock -TotalSeconds $batchEtaSec))
+    $batchEtaReady = Test-EtaDisplayReady -PercentComplete $batchPercent -ElapsedSec $batchElapsedSec -ProcessedSec $processedMediaSec -MinimumElapsedSec 45.0 -MinimumProcessedSec 45.0
+    $batchStatus = if ($batchEtaReady) {
+        "本轮预计剩余 {0}" -f (Format-DurationClock -TotalSeconds $batchEtaSec)
+    } else {
+        "本轮预计剩余计算中..."
+    }
     $batchOperation = ("第 {0}/{1} 个" -f $batchCurrentIndex, $batchTotalCount)
+    if (-not [string]::IsNullOrWhiteSpace($batchSummaryText)) {
+        $batchOperation = ("{0} | {1}" -f $batchOperation, $batchSummaryText)
+    }
     Write-Progress -Id 2 -Activity "批量压缩任务" -Status $batchStatus -CurrentOperation $batchOperation -PercentComplete $batchPercent
 }
 
@@ -1461,6 +1517,8 @@ function Invoke-EncodeWorkflow {
         [Parameter(Mandatory = $true)]
         [string[]]$VideoArguments,
 
+        [string[]]$InputArguments = @(),
+
         [Parameter(Mandatory = $true)]
         [string]$DefaultSuffix,
 
@@ -1505,6 +1563,13 @@ function Invoke-EncodeWorkflow {
         "-progress", "pipe:1"
         "-stats_period", "1"
         "-y"
+    )
+
+    if ($InputArguments -and $InputArguments.Count -gt 0) {
+        $arguments += $InputArguments
+    }
+
+    $arguments += @(
         "-i", $resolvedInputPath
         "-af", "aresample=$AudioSampleRate`:resampler=soxr"
     )

@@ -28,8 +28,8 @@ $videoArguments = @(
     "-b:v", ("{0}k" -f $VideoBitrateKbps)
     "-profile:v", "main"
     "-preset:v", "veryfast"
+    "-async_depth", "8"
     "-look_ahead", "0"
-    "-low_power", "1"
 )
 
 $result = Invoke-EncodeWorkflow `
