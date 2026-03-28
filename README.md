@@ -161,8 +161,8 @@ powershell -ExecutionPolicy Bypass -File .\compress-from-task.ps1 `
 
 - 不带 `-Count` 时，默认值会显示为当前 `task.json` 中剩余的待处理总数。
 - 如果输入数量大于剩余待处理总数，脚本会自动按剩余待处理总数执行。
-- `ParallelCount` 当前支持 `1` 或 `2`，其中 `2` 更适合做 NVENC 这类硬编码批量吞吐测试。
-- 使用 `nvenc + ParallelCount 2` 时，脚本会为每个任务单独生成临时输出文件，避免并行任务互相覆盖。
+- `ParallelCount` 当前支持 `1` 或 `2`，其中 `2` 适合在确认驱动、显存和整机响应都稳定后做双并行吞吐测试。
+- 使用 `ParallelCount 2` 时，脚本会为每个并行任务单独生成 worker 状态文件；如果同时启用 `ReplaceOriginalMode yes`，则 `qsv / nvenc / amf / cpu` 四种编码路径都会为每个任务单独生成唯一的 `.codex-temp-*` 临时输出文件，避免并行任务互相覆盖。
 - 压缩过程中如果用户正常关闭脚本，脚本会尽力停止当前 ffmpeg、删除当前临时输出，并把当前项目写回 `pending`。
 - 中断时会在 `history.log` 追加一条 `interrupted` 记录，便于后续排查。
 - 如果是强杀进程、断电这类极端中断，Windows 不一定会给脚本回调时间，仍由下次启动时的恢复逻辑清理遗留 temp 并重置状态。
