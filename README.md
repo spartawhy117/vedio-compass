@@ -87,7 +87,11 @@ Video Compass 适合这类使用场景：
 
 如果缺少 FFmpeg，可执行：
 
-先打开 PowerShell，再手动执行 [check-video-compass-env.ps1](./check-video-compass-env.ps1) 的安装参数版本。
+先打开 PowerShell，再手动执行：
+
+```powershell
+.\check-video-compass-env.ps1 -InstallFfmpeg
+```
 
 ---
 
