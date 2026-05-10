@@ -1,19 +1,24 @@
 # Video Compass
 
-Windows 下的视频扫描、任务管理与批量压缩工具。
+[中文](./README.md) | [English](./README.en.md)
 
-当前版本的目标不是“提供一堆分散脚本”，而是提供一个 **解压即用、单入口管理** 的工作流：
+一个面向 Windows 的视频库扫描与批量压缩工具。
+
+解压后直接运行 `start.cmd`，就可以在当前目录里：
 
 - 新建扫描任务
-- 继续已有任务
-- 清理和恢复中断任务
-- 环境检查
+- 继续已有压缩任务
+- 清理中断残留
+- 做环境检查
 
-## 快速开始
+## 特点
 
-### 1. 准备环境
+- 单入口：不需要分别点多个 `.ps1`
+- 任务化：扫描结果会写入 `tasks/`
+- 可恢复：中断后可以继续处理
+- 多编码器：支持 `qsv` / `nvenc` / `amf` / `cpu`
 
-要求：
+## 环境要求
 
 - Windows
 - PowerShell 5.1 或 PowerShell 7+
@@ -28,9 +33,11 @@ Windows 下的视频扫描、任务管理与批量压缩工具。
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\app\commands\check-video-compass-env.ps1
 ```
 
-### 2. 启动工具
+## 快速开始
 
-推荐直接双击：
+### 1. 启动
+
+直接双击：
 
 ```text
 start.cmd
@@ -42,11 +49,9 @@ start.cmd
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\video-compass.ps1
 ```
 
-启动后会进入统一菜单。
+### 2. 选择操作
 
-## 统一入口包含什么
-
-当前入口支持：
+启动后会进入统一菜单：
 
 1. 开始新任务
 2. 管理已有任务
@@ -54,25 +59,15 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\video-compass.ps1
 4. 环境检查
 5. 退出
 
-其中“管理已有任务”支持：
+### 3. 新建任务
 
-- 查看任务摘要
-- 继续压缩
-- 重置中断状态
-- 清理临时文件和并行状态文件
-- 删除任务目录
-
-## 工作流
-
-### 新建任务
-
-统一入口会收集：
+扫描时会询问：
 
 - 扫描目录
 - 扫描阈值码率
 - 目标压缩码率
 
-扫描完成后会在 `tasks/` 下生成任务目录，例如：
+扫描完成后会生成任务目录，例如：
 
 ```text
 tasks/<目录名>__scan-4500__target-3500/
@@ -81,26 +76,27 @@ tasks/<目录名>__scan-4500__target-3500/
   history.log
 ```
 
-### 继续压缩
+### 4. 继续压缩
 
-从任务列表里选择已有任务后，可以继续压缩待处理项。  
-压缩时仍支持：
+从任务列表中选择一个已有任务后，可以：
 
-- `qsv`
-- `nvenc`
-- `amf`
-- `cpu`
+- 查看摘要
+- 继续压缩待处理项
+- 重置中断状态
+- 清理临时文件和并行状态文件
+- 删除任务目录
 
 ## 中断与恢复
 
-当前版本针对“脚本被关掉但 `ffmpeg` 还在跑”的问题做了专门治理：
+压缩任务运行在独立执行进程中，并带有 watchdog。
 
-- 长任务在独立执行子进程中运行
-- 压缩链路配有独立 watchdog
-- 如果执行子进程被强杀，watchdog 会尝试回收对应 `ffmpeg`
-- 下次启动时仍会做任务恢复和临时文件清理
+如果压缩过程中脚本被关闭，工具会尽量：
 
-恢复时会处理：
+- 停止对应 `ffmpeg`
+- 删除遗留临时输出
+- 把任务恢复为可继续状态
+
+下次启动时还会再次做恢复扫描，处理：
 
 - `processing -> pending`
 - 遗留 `.codex-temp-*`
@@ -109,7 +105,7 @@ tasks/<目录名>__scan-4500__target-3500/
 
 ## 目录结构
 
-最终用户可见的核心结构：
+用户最关心的目录通常只有这些：
 
 ```text
 video-compass/
@@ -118,45 +114,27 @@ video-compass/
   tasks/
   app/
   README.md
+  README.en.md
 ```
 
-内部脚本已经下沉到：
+说明：
 
-```text
-app/
-  core/
-  commands/
-  runtime/
-```
+- `tasks/`：任务数据目录
+- `app/`：内部脚本目录
+- `app/core/`：公共逻辑
+- `app/commands/`：功能命令
+- `app/runtime/`：执行会话与 watchdog
 
 ## 任务文件
 
 每个任务目录包含：
 
-- `task.json`：任务状态源
-- `summary.txt`：摘要
-- `history.log`：历史记录
-
-当前实现仍保持旧任务格式兼容。
-
-## 开发验证
-
-仓库中包含 `e2e/` 目录，用于开发期端到端验证。
-
-注意：
-
-- `e2e/` 不属于最终 release 发包内容
-- `e2e/workspace/` 是测试工作区，不应手动提交
-
-已提供的验证脚本包括：
-
-- `e2e/fixtures/reset-test-workspace.ps1`
-- `e2e/scripts/test-watchdog-kill.ps1`
-- `e2e/scripts/test-task-recovery.ps1`
-- `e2e/scripts/test-repeated-execution.ps1`
+- `task.json`：任务状态
+- `summary.txt`：任务摘要
+- `history.log`：处理历史
 
 ## 说明
 
 - 当前只支持 Windows
-- 当前不做跨平台支持承诺
-- 当前首页采用菜单式 PowerShell 交互，不做重型全屏 TUI
+- 当前不提供跨平台支持承诺
+- `e2e/` 仅用于开发验证，不属于最终 release 发包内容
