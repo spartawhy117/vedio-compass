@@ -7,6 +7,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. (Join-Path -Path $PSScriptRoot -ChildPath "..\core\video-compass-common.ps1")
+
 function Initialize-ConsoleEncoding {
     try {
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -38,9 +40,10 @@ function Resolve-ToolPath {
         return $command.Source
     }
 
-    $localPath = Join-Path -Path $PSScriptRoot -ChildPath $LocalFileName
-    if (Test-Path -LiteralPath $localPath) {
-        return $localPath
+    foreach ($localPath in @(Get-VideoCompassLocalToolCandidatePaths -LocalFileName $LocalFileName)) {
+        if ($localPath -and (Test-Path -LiteralPath $localPath)) {
+            return $localPath
+        }
     }
 
     throw "找不到 $CommandName。请先运行 .\check-video-compass-env.ps1，或安装 FFmpeg，并把 $LocalFileName 放到 PATH 或脚本同目录。"
@@ -241,8 +244,10 @@ $ffmpegPath = Resolve-ToolPath -CommandName "ffmpeg.exe" -LocalFileName "ffmpeg.
 $videoExtensions = @(".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".wmv")
 $repairableExtensions = @(".mp4", ".mov", ".m4v")
 
-$files = Get-ChildItem -LiteralPath $resolvedRootPath -File -Recurse |
-    Where-Object { $videoExtensions -contains $_.Extension.ToLowerInvariant() }
+$files = @(
+    Get-ChildItem -LiteralPath $resolvedRootPath -File -Recurse |
+        Where-Object { $videoExtensions -contains $_.Extension.ToLowerInvariant() }
+)
 
 if (-not $files) {
     throw "目标目录下没有找到支持的视频文件。"

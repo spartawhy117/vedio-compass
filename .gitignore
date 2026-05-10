@@ -1,4 +1,10 @@
-tasks/
+tasks/*
+!tasks/.gitkeep
 plan.md
 build/*.zip
 build/package-temp-*/
+e2e/workspace/
+.tmp-smoke-sample/
+.tmp-job-test/
+.tmp-job-test-2/
+release/

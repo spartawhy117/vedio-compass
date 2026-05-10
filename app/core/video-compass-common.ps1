@@ -17,6 +17,82 @@ function Initialize-ConsoleEncoding {
 
 Initialize-ConsoleEncoding
 
+function Get-VideoCompassInstallRoot {
+    $current = $PSScriptRoot
+    for ($depth = 0; $depth -lt 6; $depth++) {
+        if (
+            (Test-Path -LiteralPath (Join-Path -Path $current -ChildPath "README.md")) -and
+            (
+                (Test-Path -LiteralPath (Join-Path -Path $current -ChildPath "tasks")) -or
+                (Test-Path -LiteralPath (Join-Path -Path $current -ChildPath "app"))
+            )
+        ) {
+            return $current
+        }
+
+        $parent = Split-Path -Path $current -Parent
+        if ([string]::IsNullOrWhiteSpace($parent) -or ($parent -eq $current)) {
+            break
+        }
+
+        $current = $parent
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath "..\.."))
+}
+
+function Get-VideoCompassProjectRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:VIDEO_COMPASS_PROJECT_ROOT)) {
+        return [System.IO.Path]::GetFullPath($env:VIDEO_COMPASS_PROJECT_ROOT)
+    }
+
+    return (Get-VideoCompassInstallRoot)
+}
+
+function Get-VideoCompassAppRoot {
+    return (Join-Path -Path (Get-VideoCompassInstallRoot) -ChildPath "app")
+}
+
+function Get-VideoCompassCommandRoot {
+    return (Join-Path -Path (Get-VideoCompassAppRoot) -ChildPath "commands")
+}
+
+function Get-VideoCompassRuntimeRoot {
+    return (Join-Path -Path (Get-VideoCompassAppRoot) -ChildPath "runtime")
+}
+
+function Get-VideoCompassCommandPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FileName
+    )
+
+    return (Join-Path -Path (Get-VideoCompassCommandRoot) -ChildPath $FileName)
+}
+
+function Get-VideoCompassRuntimePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FileName
+    )
+
+    return (Join-Path -Path (Get-VideoCompassRuntimeRoot) -ChildPath $FileName)
+}
+
+function Get-VideoCompassLocalToolCandidatePaths {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LocalFileName
+    )
+
+    return @(
+        (Join-Path -Path (Get-VideoCompassProjectRoot) -ChildPath $LocalFileName),
+        (Join-Path -Path (Get-VideoCompassInstallRoot) -ChildPath $LocalFileName),
+        (Join-Path -Path (Get-VideoCompassCommandRoot) -ChildPath $LocalFileName),
+        (Join-Path -Path $PSScriptRoot -ChildPath $LocalFileName)
+    )
+}
+
 function Initialize-VideoCompassGlobals {
     if (-not (Get-Variable -Name "VideoCompassActiveEncodeContext" -Scope Global -ErrorAction SilentlyContinue)) {
         $global:VideoCompassActiveEncodeContext = $null
@@ -156,13 +232,16 @@ function Set-VideoCompassActiveEncodeContext {
     param(
         [int]$ProcessId,
         [string]$OutputPath,
+        [string]$InputPath = "",
         [IntPtr]$JobHandle = [IntPtr]::Zero
     )
 
     $global:VideoCompassActiveEncodeContext = @{
         ProcessId = $ProcessId
         OutputPath = $OutputPath
+        InputPath = $InputPath
         JobHandle = $JobHandle
+        WatchdogFilePath = ""
         CleanupDone = $false
     }
 }
@@ -193,6 +272,66 @@ function Update-VideoCompassActiveEncodeJobHandle {
 
 function Clear-VideoCompassActiveEncodeContext {
     $global:VideoCompassActiveEncodeContext = $null
+}
+
+function Get-VideoCompassWatchdogContextDirectory {
+    if ([string]::IsNullOrWhiteSpace($env:VIDEO_COMPASS_WATCHDOG_CONTEXT_DIR)) {
+        return $null
+    }
+
+    $resolved = [System.IO.Path]::GetFullPath($env:VIDEO_COMPASS_WATCHDOG_CONTEXT_DIR)
+    if (-not (Test-Path -LiteralPath $resolved)) {
+        [void](New-Item -ItemType Directory -Path $resolved -Force)
+    }
+
+    return $resolved
+}
+
+function Register-VideoCompassWatchdogProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    $context = $global:VideoCompassActiveEncodeContext
+    if (-not $context) {
+        return
+    }
+
+    $watchdogDir = Get-VideoCompassWatchdogContextDirectory
+    if (-not $watchdogDir) {
+        return
+    }
+
+    $recordPath = Join-Path -Path $watchdogDir -ChildPath ("encode-{0}-{1}.json" -f $PID, [System.Guid]::NewGuid().ToString("N"))
+    $payload = [pscustomobject]@{
+        parentPid = $PID
+        ffmpegPid = $ProcessId
+        inputPath = if ($context.ContainsKey("InputPath")) { [string]$context.InputPath } else { "" }
+        outputPath = if ($context.ContainsKey("OutputPath")) { [string]$context.OutputPath } else { "" }
+        writtenAt = [DateTime]::UtcNow.ToString("o")
+    }
+
+    [System.IO.File]::WriteAllText($recordPath, ($payload | ConvertTo-Json -Depth 4), [System.Text.Encoding]::UTF8)
+    $context.WatchdogFilePath = $recordPath
+}
+
+function Unregister-VideoCompassWatchdogProcess {
+    $context = $global:VideoCompassActiveEncodeContext
+    if (-not $context) {
+        return
+    }
+
+    if ($context.ContainsKey("WatchdogFilePath") -and -not [string]::IsNullOrWhiteSpace($context.WatchdogFilePath)) {
+        try {
+            if (Test-Path -LiteralPath $context.WatchdogFilePath) {
+                Remove-Item -LiteralPath $context.WatchdogFilePath -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+        }
+    }
+
+    $context.WatchdogFilePath = ""
 }
 
 function Set-VideoCompassActiveTaskContext {
@@ -332,6 +471,7 @@ function Stop-VideoCompassActiveEncode {
         }
     }
 
+    Unregister-VideoCompassWatchdogProcess
     Clear-VideoCompassActiveEncodeContext
 }
 
@@ -552,9 +692,10 @@ function Resolve-ToolPath {
         return $command.Source
     }
 
-    $localPath = Join-Path -Path $PSScriptRoot -ChildPath $LocalFileName
-    if (Test-Path -LiteralPath $localPath) {
-        return $localPath
+    foreach ($localPath in @(Get-VideoCompassLocalToolCandidatePaths -LocalFileName $LocalFileName)) {
+        if ($localPath -and (Test-Path -LiteralPath $localPath)) {
+            return $localPath
+        }
     }
 
     throw "找不到 $CommandName。请先运行 .\check-video-compass-env.ps1，或安装 FFmpeg，并把 $LocalFileName 放到 PATH 或脚本同目录。"
@@ -574,8 +715,13 @@ function Test-ToolResolvable {
         return $true
     }
 
-    $localPath = Join-Path -Path $PSScriptRoot -ChildPath $LocalFileName
-    return (Test-Path -LiteralPath $localPath)
+    foreach ($localPath in @(Get-VideoCompassLocalToolCandidatePaths -LocalFileName $LocalFileName)) {
+        if ($localPath -and (Test-Path -LiteralPath $localPath)) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Assert-RequiredVideoTools {
@@ -821,7 +967,42 @@ function Get-VideoInfo {
 }
 
 function Get-TaskRootPath {
-    return (Join-Path -Path $PSScriptRoot -ChildPath "tasks")
+    return (Join-Path -Path (Get-VideoCompassProjectRoot) -ChildPath "tasks")
+}
+
+function Get-VideoCompassTaskDirectories {
+    $taskRoot = Get-TaskRootPath
+    if (-not (Test-Path -LiteralPath $taskRoot)) {
+        return @()
+    }
+
+    return @(
+        Get-ChildItem -LiteralPath $taskRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path -LiteralPath (Join-Path -Path $_.FullName -ChildPath "task.json") } |
+            Sort-Object LastWriteTime -Descending
+    )
+}
+
+function Get-VideoCompassTaskSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TaskFolder
+    )
+
+    $task = Read-TaskFile -TaskFolder $TaskFolder
+    $items = @($task.items)
+    return [pscustomobject]@{
+        Task = $task
+        TaskName = [string]$task.taskName
+        SourceRoot = [string]$task.sourceRoot
+        PendingCount = @($items | Where-Object { $_.status -eq "pending" }).Count
+        ProcessingCount = @($items | Where-Object { $_.status -eq "processing" }).Count
+        DoneCount = @($items | Where-Object { $_.status -eq "done" }).Count
+        FailedCount = @($items | Where-Object { $_.status -eq "failed" }).Count
+        UpdatedAt = [string]$task.updatedAt
+        TargetKbps = [int]$task.targetKbps
+        ThresholdKbps = [int]$task.thresholdKbps
+    }
 }
 
 function Get-SafeLeafName {
@@ -1107,6 +1288,31 @@ function Read-YesNoOrDefault {
     }
 }
 
+function Resolve-WorkerPowerShellPath {
+    $candidates = @(
+        (Join-Path -Path $PSHOME -ChildPath "powershell.exe"),
+        (Join-Path -Path $PSHOME -ChildPath "pwsh.exe")
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $command = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    throw "找不到可用的 PowerShell 可执行文件。"
+}
+
 function Get-OutputExtension {
     param(
         [Parameter(Mandatory = $true)]
@@ -1178,6 +1384,139 @@ function Get-TemporaryOutputFilesForInput {
                 $_.Name.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
             }
     )
+}
+
+function Stop-OrphanedEncodeProcessesForTask {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TaskFolderPath,
+
+        [Parameter(Mandatory = $true)]
+        [object]$TaskObject
+    )
+
+    $matchedProcessIds = New-Object System.Collections.Generic.HashSet[int]
+    $taskFolderLower = $TaskFolderPath.ToLowerInvariant()
+    $inputPathsLower = @(
+        $TaskObject.items |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_.path) } |
+            ForEach-Object { ([string]$_.path).ToLowerInvariant() }
+    )
+
+    $candidateProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ProcessId -ne $PID -and
+        $_.CommandLine -and
+        $_.Name -in @("powershell.exe", "pwsh.exe", "ffmpeg.exe")
+    })
+
+    foreach ($processInfo in $candidateProcesses) {
+        $commandLineLower = ([string]$processInfo.CommandLine).ToLowerInvariant()
+        $shouldStop = $false
+
+        if (($processInfo.Name -in @("powershell.exe", "pwsh.exe")) -and $commandLineLower.Contains("invoke-encode-worker.ps1") -and $commandLineLower.Contains($taskFolderLower)) {
+            $shouldStop = $true
+        } elseif ($processInfo.Name -eq "ffmpeg.exe") {
+            foreach ($inputPathLower in $inputPathsLower) {
+                if ($commandLineLower.Contains($inputPathLower)) {
+                    $shouldStop = $true
+                    break
+                }
+            }
+        }
+
+        if ($shouldStop) {
+            [void]$matchedProcessIds.Add([int]$processInfo.ProcessId)
+        }
+    }
+
+    $stoppedCount = 0
+    foreach ($processId in $matchedProcessIds) {
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+            for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+                    break
+                }
+
+                Start-Sleep -Milliseconds 200
+            }
+            $stoppedCount++
+        } catch {
+        }
+    }
+
+    return $stoppedCount
+}
+
+function Invoke-VideoCompassTaskRecovery {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TaskFolderPath,
+
+        [Parameter(Mandatory = $true)]
+        [object]$TaskObject,
+
+        [string]$EncoderForRecoveryLog = "-",
+        [bool]$ReplaceOriginal = $false,
+        [bool]$KeepBackup = $false
+    )
+
+    $resetProcessingCount = 0
+    $removedTempFileCount = 0
+    $removedParallelStateFileCount = 0
+    $stoppedOrphanProcessCount = Stop-OrphanedEncodeProcessesForTask -TaskFolderPath $TaskFolderPath -TaskObject $TaskObject
+    $staleTempFilesByPath = @{}
+
+    foreach ($item in @($TaskObject.items | Where-Object { $_.status -ne "done" -and -not [string]::IsNullOrWhiteSpace($_.path) })) {
+        foreach ($tempFile in @(Get-TemporaryOutputFilesForInput -InputPath $item.path)) {
+            $tempKey = $tempFile.FullName.ToLowerInvariant()
+            if (-not $staleTempFilesByPath.ContainsKey($tempKey)) {
+                $staleTempFilesByPath[$tempKey] = $tempFile
+            }
+        }
+    }
+
+    foreach ($parallelStateFile in @(Get-ChildItem -LiteralPath $TaskFolderPath -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '.parallel-progress-*.json' -or $_.Name -like '.parallel-result-*.json' })) {
+        try {
+            Remove-Item -LiteralPath $parallelStateFile.FullName -Force
+            $removedParallelStateFileCount++
+        } catch {
+        }
+    }
+
+    foreach ($tempFile in $staleTempFilesByPath.Values) {
+        try {
+            Remove-Item -LiteralPath $tempFile.FullName -Force
+            $removedTempFileCount++
+        } catch {
+        }
+    }
+
+    foreach ($item in @($TaskObject.items | Where-Object { $_.status -eq "processing" })) {
+        $item.status = "pending"
+        $item.lastAttemptAt = [DateTime]::UtcNow.ToString("o")
+        $item.lastResult = "检测到上次执行中断，已在本次启动前重置为待处理。"
+        $item.replacedOriginal = $false
+        $resetProcessingCount++
+    }
+
+    if ($resetProcessingCount -gt 0 -or $removedTempFileCount -gt 0 -or $removedParallelStateFileCount -gt 0 -or $stoppedOrphanProcessCount -gt 0) {
+        $TaskObject.updatedAt = [DateTime]::UtcNow.ToString("o")
+        Save-TaskFile -TaskFolder $TaskFolderPath -Task $TaskObject
+        Write-TaskSummary -TaskFolder $TaskFolderPath -Task $TaskObject
+        Append-HistoryLine -TaskFolder $TaskFolderPath -Line ("{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`t{7}" -f [DateTime]::UtcNow.ToString("o"), "-", $EncoderForRecoveryLog, $TaskObject.targetKbps, "reset_processing", $ReplaceOriginal, $KeepBackup, ("恢复了 {0} 个中断项目，删除了 {1} 个临时文件，删除了 {2} 个并行状态文件，停止了 {3} 个遗留编码进程" -f $resetProcessingCount, $removedTempFileCount, $removedParallelStateFileCount, $stoppedOrphanProcessCount))
+
+        if ($stoppedOrphanProcessCount -gt 0) {
+            Start-Sleep -Milliseconds 800
+        }
+    }
+
+    return [pscustomobject]@{
+        ResetProcessingCount = $resetProcessingCount
+        RemovedTempFileCount = $removedTempFileCount
+        RemovedParallelStateFileCount = $removedParallelStateFileCount
+        StoppedOrphanProcessCount = $stoppedOrphanProcessCount
+    }
 }
 
 function New-BackupPath {
@@ -1569,6 +1908,7 @@ function Invoke-FfmpegWithProgress {
         Add-VideoCompassProcessToJob -JobHandle $jobHandle -Process $process
         Update-VideoCompassActiveEncodeProcessId -ProcessId $process.Id
         Update-VideoCompassActiveEncodeJobHandle -JobHandle $jobHandle
+        Register-VideoCompassWatchdogProcess -ProcessId $process.Id
 
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
@@ -1597,6 +1937,7 @@ function Invoke-FfmpegWithProgress {
         }
     } finally {
         Write-VideoCompassProgress -Id 1 -Activity "正在压缩当前文件" -Completed
+        Unregister-VideoCompassWatchdogProcess
         if ($jobHandle -ne [IntPtr]::Zero) {
             try {
                 Close-VideoCompassJobHandle -JobHandle $jobHandle
@@ -1696,7 +2037,7 @@ function Invoke-EncodeWorkflow {
     Write-Host ("输出位置: {0}" -f $resolvedOutputPath) -ForegroundColor DarkGray
 
     Initialize-VideoCompassExitHandling
-    Set-VideoCompassActiveEncodeContext -ProcessId 0 -OutputPath $resolvedOutputPath -JobHandle ([IntPtr]::Zero)
+    Set-VideoCompassActiveEncodeContext -ProcessId 0 -OutputPath $resolvedOutputPath -InputPath $resolvedInputPath -JobHandle ([IntPtr]::Zero)
 
     try {
         $ffmpegResult = Invoke-FfmpegWithProgress -FfmpegPath $FfmpegPath -Arguments $arguments -SourceDurationSec $sourceInfo.DurationSec

@@ -18,18 +18,17 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-. (Join-Path -Path $PSScriptRoot -ChildPath "video-compass-common.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "..\core\video-compass-common.ps1")
 
 $ffmpegPath = Resolve-ToolPath -CommandName "ffmpeg.exe" -LocalFileName "ffmpeg.exe"
 $ffprobePath = Resolve-ToolPath -CommandName "ffprobe.exe" -LocalFileName "ffprobe.exe"
 
 $videoArguments = @(
-    "-c:v", "hevc_qsv"
+    "-c:v", "hevc_nvenc"
     "-b:v", ("{0}k" -f $VideoBitrateKbps)
+    "-rc:v", "vbr"
+    "-preset:v", "p4"
     "-profile:v", "main"
-    "-preset:v", "veryfast"
-    "-async_depth", "8"
-    "-look_ahead", "0"
 )
 
 $result = Invoke-EncodeWorkflow `
@@ -38,7 +37,7 @@ $result = Invoke-EncodeWorkflow `
     -InputPath $InputPath `
     -OutputPath $OutputPath `
     -VideoArguments $videoArguments `
-    -DefaultSuffix "ffmpeg_qsv" `
+    -DefaultSuffix "ffmpeg_nvenc" `
     -AudioBitrateKbps $AudioBitrateKbps `
     -AudioSampleRate $AudioSampleRate `
     -AudioCodec $AudioCodec `

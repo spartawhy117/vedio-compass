@@ -18,7 +18,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-. (Join-Path -Path $PSScriptRoot -ChildPath "video-compass-common.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "..\core\video-compass-common.ps1")
 
 $ffmpegPath = Resolve-ToolPath -CommandName "ffmpeg.exe" -LocalFileName "ffmpeg.exe"
 $ffprobePath = Resolve-ToolPath -CommandName "ffprobe.exe" -LocalFileName "ffprobe.exe"

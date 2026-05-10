@@ -5,6 +5,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. (Join-Path -Path $PSScriptRoot -ChildPath "..\core\video-compass-common.ps1")
+
 try {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [Console]::InputEncoding = $utf8NoBom
@@ -32,9 +34,10 @@ function Get-ResolvedTool {
         return $command.Source
     }
 
-    $localPath = Join-Path -Path $PSScriptRoot -ChildPath $LocalFileName
-    if (Test-Path -LiteralPath $localPath) {
-        return $localPath
+    foreach ($localPath in @(Get-VideoCompassLocalToolCandidatePaths -LocalFileName $LocalFileName)) {
+        if ($localPath -and (Test-Path -LiteralPath $localPath)) {
+            return $localPath
+        }
     }
 
     return $null

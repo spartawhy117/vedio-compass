@@ -16,7 +16,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-. (Join-Path -Path $PSScriptRoot -ChildPath "video-compass-common.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "..\core\video-compass-common.ps1")
 
 $global:VideoCompassShutdownRequested = $false
 $global:VideoCompassShutdownReason = ""
@@ -345,7 +345,7 @@ function Start-EncodeJobWorker {
     )
 
     $workerPowerShellPath = Resolve-WorkerPowerShellPath
-    $workerScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "invoke-encode-worker.ps1"
+    $workerScriptPath = Get-VideoCompassCommandPath -FileName "invoke-encode-worker.ps1"
     $progressFilePath = New-ParallelWorkerFilePath -TaskFolderPath $TaskFolderPath -Prefix "parallel-progress" -SlotId $SlotId
     $resultFilePath = New-ParallelWorkerFilePath -TaskFolderPath $TaskFolderPath -Prefix "parallel-result" -SlotId $SlotId
     $progressLabel = [System.IO.Path]::GetFileName($ScriptArgs.InputPath)
@@ -593,58 +593,22 @@ $encoderForRecoveryLog = if ($Encoder) { $Encoder } else { "-" }
 $resetProcessingCount = 0
 $removedTempFileCount = 0
 $removedParallelStateFileCount = 0
-$stoppedOrphanProcessCount = Stop-OrphanedEncodeProcessesForTask -TaskFolderPath $resolvedTaskFolder -TaskObject $task
-$staleTempFilesByPath = @{}
-foreach ($item in @($task.items | Where-Object { $_.status -ne "done" -and -not [string]::IsNullOrWhiteSpace($_.path) })) {
-    foreach ($tempFile in @(Get-TemporaryOutputFilesForInput -InputPath $item.path)) {
-        $tempKey = $tempFile.FullName.ToLowerInvariant()
-        if (-not $staleTempFilesByPath.ContainsKey($tempKey)) {
-            $staleTempFilesByPath[$tempKey] = $tempFile
-        }
-    }
+$recoveryResult = Invoke-VideoCompassTaskRecovery -TaskFolderPath $resolvedTaskFolder -TaskObject $task -EncoderForRecoveryLog $encoderForRecoveryLog -ReplaceOriginal $replaceOriginal -KeepBackup $keepBackup
+$resetProcessingCount = [int]$recoveryResult.ResetProcessingCount
+$removedTempFileCount = [int]$recoveryResult.RemovedTempFileCount
+$removedParallelStateFileCount = [int]$recoveryResult.RemovedParallelStateFileCount
+$stoppedOrphanProcessCount = [int]$recoveryResult.StoppedOrphanProcessCount
+if ($resetProcessingCount -gt 0) {
+    Write-Host ("检测到 {0} 个上次中断的处理中项目，已重置为待处理。" -f $resetProcessingCount) -ForegroundColor Yellow
 }
-
-foreach ($parallelStateFile in @(Get-ChildItem -LiteralPath $resolvedTaskFolder -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '.parallel-progress-*.json' -or $_.Name -like '.parallel-result-*.json' })) {
-    try {
-        Remove-Item -LiteralPath $parallelStateFile.FullName -Force
-        $removedParallelStateFileCount++
-    } catch {
-        Write-Host ("警告: 无法删除并行状态文件 {0}" -f $parallelStateFile.FullName) -ForegroundColor Yellow
-    }
+if ($removedTempFileCount -gt 0) {
+    Write-Host ("已清理遗留临时文件 {0} 个。" -f $removedTempFileCount) -ForegroundColor Yellow
 }
-
-foreach ($tempFile in $staleTempFilesByPath.Values) {
-    try {
-        Remove-Item -LiteralPath $tempFile.FullName -Force
-        $removedTempFileCount++
-    } catch {
-        Write-Host ("警告: 无法删除临时文件 {0}" -f $tempFile.FullName) -ForegroundColor Yellow
-    }
+if ($removedParallelStateFileCount -gt 0) {
+    Write-Host ("已清理遗留并行状态文件 {0} 个。" -f $removedParallelStateFileCount) -ForegroundColor Yellow
 }
-
-foreach ($item in @($task.items | Where-Object { $_.status -eq "processing" })) {
-    $item.status = "pending"
-    $item.lastAttemptAt = [DateTime]::UtcNow.ToString("o")
-    $item.lastResult = "检测到上次执行中断，已在本次启动前重置为待处理。"
-    $item.replacedOriginal = $false
-    $resetProcessingCount++
-}
-
-if ($resetProcessingCount -gt 0 -or $removedTempFileCount -gt 0 -or $removedParallelStateFileCount -gt 0 -or $stoppedOrphanProcessCount -gt 0) {
-    Save-TaskArtifacts -TaskFolderPath $resolvedTaskFolder -TaskObject $task
-    Append-HistoryLine -TaskFolder $resolvedTaskFolder -Line ("{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`t{7}" -f [DateTime]::UtcNow.ToString("o"), "-", $encoderForRecoveryLog, $task.targetKbps, "reset_processing", $replaceOriginal, $keepBackup, ("恢复了 {0} 个中断项目，删除了 {1} 个临时文件，删除了 {2} 个并行状态文件，停止了 {3} 个遗留编码进程" -f $resetProcessingCount, $removedTempFileCount, $removedParallelStateFileCount, $stoppedOrphanProcessCount))
-    if ($resetProcessingCount -gt 0) {
-        Write-Host ("检测到 {0} 个上次中断的处理中项目，已重置为待处理。" -f $resetProcessingCount) -ForegroundColor Yellow
-    }
-    if ($removedTempFileCount -gt 0) {
-        Write-Host ("已清理遗留临时文件 {0} 个。" -f $removedTempFileCount) -ForegroundColor Yellow
-    }
-    if ($removedParallelStateFileCount -gt 0) {
-        Write-Host ("已清理遗留并行状态文件 {0} 个。" -f $removedParallelStateFileCount) -ForegroundColor Yellow
-    }
-    if ($stoppedOrphanProcessCount -gt 0) {
-        Write-Host ("已停止遗留编码进程 {0} 个。" -f $stoppedOrphanProcessCount) -ForegroundColor Yellow
-    }
+if ($stoppedOrphanProcessCount -gt 0) {
+    Write-Host ("已停止遗留编码进程 {0} 个。" -f $stoppedOrphanProcessCount) -ForegroundColor Yellow
 }
 
 $pendingAvailableCount = @($task.items | Where-Object { $_.status -eq "pending" }).Count
@@ -713,10 +677,10 @@ if (-not $pendingItems -or $pendingItems.Count -eq 0) {
 }
 
 $encoderScriptByName = @{
-    qsv = Join-Path -Path $PSScriptRoot -ChildPath "encode-hevc-qsv-ffmpeg.ps1"
-    nvenc = Join-Path -Path $PSScriptRoot -ChildPath "encode-hevc-nvenc-ffmpeg.ps1"
-    amf = Join-Path -Path $PSScriptRoot -ChildPath "encode-hevc-amf-ffmpeg.ps1"
-    cpu = Join-Path -Path $PSScriptRoot -ChildPath "encode-hevc-cpu-ffmpeg.ps1"
+    qsv = Get-VideoCompassCommandPath -FileName "encode-hevc-qsv-ffmpeg.ps1"
+    nvenc = Get-VideoCompassCommandPath -FileName "encode-hevc-nvenc-ffmpeg.ps1"
+    amf = Get-VideoCompassCommandPath -FileName "encode-hevc-amf-ffmpeg.ps1"
+    cpu = Get-VideoCompassCommandPath -FileName "encode-hevc-cpu-ffmpeg.ps1"
 }
 
 $encoderScriptPath = $encoderScriptByName[$Encoder]
@@ -733,7 +697,7 @@ $batchStartedAtUtc = [DateTime]::UtcNow
 $processed = 0
 $failedCount = 0
 $skippedCount = 0
-$workingDirectory = $PSScriptRoot
+$workingDirectory = Get-VideoCompassProjectRoot
 $parallelWorkerHostJobHandle = [IntPtr]::Zero
 
 $env:VIDEO_COMPASS_BATCH_TOTAL_SIZE_BYTES = $batchTotalSizeBytes.ToString([System.Globalization.CultureInfo]::InvariantCulture)

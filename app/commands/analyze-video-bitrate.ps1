@@ -8,7 +8,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-. (Join-Path -Path $PSScriptRoot -ChildPath "video-compass-common.ps1")
+. (Join-Path -Path $PSScriptRoot -ChildPath "..\core\video-compass-common.ps1")
 
 Assert-RequiredVideoTools -RequireFfprobe
 
@@ -46,8 +46,10 @@ if ((-not $ResetTask) -and (Test-Path -LiteralPath $existingTaskPath)) {
     }
 }
 
-$files = Get-ChildItem -LiteralPath $resolvedRootPath -File -Recurse |
-    Where-Object { $videoExtensions -contains $_.Extension.ToLowerInvariant() }
+$files = @(
+    Get-ChildItem -LiteralPath $resolvedRootPath -File -Recurse |
+        Where-Object { $videoExtensions -contains $_.Extension.ToLowerInvariant() }
+)
 
 if (-not $files) {
     throw "目标目录下没有找到支持的视频文件。"
